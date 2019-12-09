@@ -1,0 +1,42 @@
+#import {Copier, Merger} from "types6"
+
+let Scheme future = funct(uni, t, poly-size) {
+    uni, t, poly-size,
+
+    clone: funct this()
+        let {uni, t, poly-size} = this;
+        Scheme(uni, t.ref(), poly-size)
+    end,
+
+    moveInto: funct this(factory)
+        let {uni, t, poly-size} = this;
+        let target = factory.uni;
+
+        if uni == target then
+            this
+        else
+            factory.poly-count = factory.poly-count +. poly-size;
+
+            c = Copier(factory);
+            t = c.copy(t);
+            c.drop();
+
+            Scheme(target, t, 0)
+        end
+    end,
+
+    drop: funct this()
+        this.t.drop(this.uni.gc);
+    end,
+} end;
+
+merge-schemes = funct(factory, s1, s2)
+    s1 = s1.moveInto(factory);
+    s2 = s2.moveInto(factory);
+
+    merger = Merger(factory);
+    t = merger.mergeOwned(s1.t, s2.t);
+    merger.finish();
+
+    Scheme(factory.uni, t, 0)
+end;

@@ -1,0 +1,3 @@
+x = map;
+do for i in (x = 4; []).0 then _ end;
+x([], funct (x) _ end);

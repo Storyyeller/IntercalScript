@@ -1,0 +1,9 @@
+Foo = {
+    x: 4,
+
+    bar: funct this ()
+        this.x
+    end,
+};
+
+Foo.bar() - 2;

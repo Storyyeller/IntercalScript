@@ -1,0 +1,911 @@
+#import {s} from "std:strings"
+
+#import {FILTER, filter-case} from "filter"
+#import {get-literal-type} from "literals"
+#import {Scheme, merge-schemes} from "schemes2"
+#import {Solver, Universe, Factory, MONO, finish-droplist} from "types6"
+
+let Scope future = funct(consts, parent)
+    let {mods, solver} = consts;
+
+    {
+    consts, mods, solver,
+
+
+    localcells: eml(),
+    parent-bindings: parent,
+    factory: if parent == null then Factory(MONO, null) else parent.factory end,
+    (* Set of vars that were read before definition and hence must be captured *)
+    nonlocals: new-map-mut(_),
+    assignments: new-map-mut(_),
+
+    childScope: funct this (bindings) Scope(this.consts, bindings) end,
+    isExported: funct(name) !s.startsWith(name, "_") end,
+} end;
+
+let Bindings future = funct(scope, bindings, final, context, factory)
+    if context == null then context = {fut: null, unsafe: false, dead: false} end;
+    {
+    s: scope,
+    factory mut: factory,
+    bindings, final,
+    context: {fut mut: context.fut, unsafe mut: context.unsafe, dead mut: context.dead},
+
+    internalError: funct this () this.s.consts.reporter.internalError() end,
+    reportError: funct this (msg) this.s.consts.reporter.onError(msg) end,
+    reportWarning: funct this (msg) this.s.consts.reporter.onWarning(msg) end,
+
+    getLitType: funct this (name)
+        (* Used to determine whether variables are literals for condition checking purposes *)
+        if this.bindings.has(name) then
+            null
+        else
+            parent = this.s.parent-bindings;
+            if parent != null then parent.getLitType(name) else get-literal-type(name) end
+        end
+    end,
+
+    (* Get var scheme directly, without specialization *)
+    getVarRC: funct this (name, span, islocal, child-scope)
+        if !islocal then
+            (* Some child scope is trying to borrow _name_, so mark it as final *)
+            this.final.set(name, span)
+        end;
+
+        rc = this.bindings.get(name);
+        if rc != undef then
+            rc.clone()
+        else
+            this.s.nonlocals.set(name, span);
+            parent = this.s.parent-bindings;
+            if parent != null then
+                parent.getVarRC(name, span, false, child-scope)
+            else
+
+                lit = get-literal-type(name);
+                if lit == null then
+                    this.reportError(span.print(
+                        "Error: Undefined variable " +' name));
+                    (*
+                        Also set a dummy scheme in the bindings of the innermost scope
+                        to avoid multiple undefined var errors for the same variable in
+                        the same scope.
+                    *)
+                    dummy = this.dummySchemePoly();
+                    child-scope.bindings.set(name, dummy.clone());
+                    dummy
+                else
+                    factory = Factory(Universe(), null);
+                    node = if let case Undef() = lit then factory.PUndef(span)
+                        else if let case Null() = lit then factory.PNull(span)
+                        else if let case Bool() = lit then factory.PBool(span)
+                        else if let case Int() = lit then factory.PInt(span)
+                        else let case Float() = lit; factory.PNum(span)
+                    end end end end;
+                    factory.uni.locked = true;
+                    Scheme(factory.uni, node, 0)
+                end
+            end
+        end
+    end,
+
+    dummyScheme: funct this() Scheme(this.factory.uni, this.factory.Bot(), 0) end,
+
+    dummySchemePoly: funct this()
+        factory = Factory(Universe(), null);
+        dummy-scheme = Scheme(factory.uni, factory.Bot(), 0);
+        factory.uni.locked = true;
+        dummy-scheme
+    end,
+
+    getVar: funct this (name, expl)
+        rc = this.getVarRC(name, expl, true, this);
+        (*print("getVar", name, this.s.factory.uni._id, this.factory.uni._id, rc.uni._id, rc.uni.locked);*)
+
+        (* check if we need to specialize *)
+        if rc.uni != this.factory.uni then
+            if !rc.uni.locked then
+                this.reportError(expl.print("Error: Cannot access variable in nested polymorphic context")
+                    +' this._getPolyErrorMessage());
+
+                (* return dummy scheme so we can keep going and find other compile errors *)
+                rc.drop();
+                rc = this.dummyScheme();
+            else
+                rc = rc.moveInto(this.factory);
+                (*print("Specialized " +' rc.uni._id, rc.t._id, " in ", this.factory.uni._id);*)
+            end;
+        end;
+        rc
+    end,
+
+    dropBinding: funct this (name)
+        old = this.bindings.get(name);
+        if old != _ then old.drop(); end;
+        this.bindings.delete(name);
+    end,
+
+    setVar: funct this (name, rc, expl)
+        final-expl = this.final.get(name);
+        if final-expl != _ then
+            this.reportError(
+                "Error: local variables captured by a closure must be effectively final." +' NL +'
+                final-expl.print("Note: variable is captured here") +' NL +'
+                expl.print("Note: variable is reassigned here")
+            )
+        end;
+
+        this.s.assignments.set(name, expl);
+        this.dropBinding(name);
+        this.bindings.set(name, rc);
+    end,
+
+    directAssignment: funct this (name, name2, span, rhs-span)
+        if name != name2 || !this.bindings.has(name) then
+            this.setVar(name, this.getVarRC(name2, rhs-span, true, this), span)
+        end;
+    end,
+
+    copy: funct this ()
+        bindings = new-map-mut(map-vals(this.bindings, funct(rc) rc.clone() end));
+        final = new-map-mut(this.final);
+        Bindings(this.s, bindings, final, this.context, this.factory)
+    end,
+
+    solve: funct this (t1, t2)
+        droplist = eml();
+        this.s.solver.solve(droplist, (t1, t2));
+        droplist.extend([t1, t2]);
+        finish-droplist(droplist, this.factory.uni.gc)
+    end,
+
+    solveAndDrop: funct this (scheme, rhs)
+        this.solve(scheme.t, rhs);
+    end,
+
+    dropAllBindings: funct this ()
+        do for name in this.bindings.keys() then this.dropBinding(name) end;
+    end,
+
+    filterScheme: funct this (scheme, filter)
+        let {uni, t, poly-size} = scheme;
+        if uni == this.factory.uni then
+            t2 = this.factory.filter(t, filter);
+            Scheme(uni, t2, poly-size)
+        else
+            factory = Factory(Universe(), null);
+            t2 = factory.filter(t, filter);
+            factory.uni.locked = true;
+            Scheme(factory.uni, t2, poly-size)
+        end
+    end,
+
+    filterBinding: funct this (name, filter)
+        rc = this.bindings.get(name);
+        if rc != _ then
+            if this.factory == this.s.factory then
+                rc = this.filterScheme(rc, filter);
+                this.bindings.set(name, rc);
+            end;
+        end;
+    end,
+
+    join: funct this (other)
+
+        do for let (name, rc1) in this.bindings then
+            rc2 = other.bindings.get(name);
+            other.bindings.delete(name);
+
+            if rc2 == _ then
+                this.dropBinding(name);
+            else if rc1.t == rc2.t then
+                rc2.drop();
+            else
+                (* Assignments are not allowed in an unguarded context, so a nontrivial join is impossible *)
+                result = merge-schemes(this.factory, rc1, rc2);
+
+                (* avoid setVar to avoid final check *)
+                this.bindings.set(name, result);
+            end end;
+        end;
+
+        other.dropAllBindings();
+        do for let (lbl, expl) in other.final then this.final.set(lbl, expl); end;
+    end,
+
+    getPatternBounds: funct this (pat, out-bindings)
+        if let case VarPat{name, span} = pat then
+            if prev = out-bindings.get(name); prev != _ then
+                this.reportError(
+                    span.print("Error: Duplicate assignment to " +' name +' " in destructuring") +' NL +'
+                    prev.1.print("Note: " +' name +' " was previously assigned here")
+                );
+                (* Doesn't matter what we return here, since we already reported an error *)
+                this.factory.Top()
+            else
+                let {n, p} = this.factory.VarPair();
+                out-bindings.set(name, (p, span));
+                n
+            end
+        else if let case ObjPat{pairs, span} = pat then
+            (*
+                Careful, we could have multiple entries for a given key,
+                so we need to accumulate them in a set per key
+            *)
+            bound-map = new-map-mut(_);
+            do for let {key, pattern, span} in pairs then
+                this._checkPhantom(key, span);
+
+                temp = bound-map.get(key);
+                if temp == _ then
+                    temp = new-set-mut(_);
+                    bound-map.set(key, temp);
+                end;
+
+                temp.add(this.getPatternBounds(pattern, out-bindings));
+            end;
+
+            this.factory.NObj(bound-map, new-map(_), span);
+        else let case CasePat{tag, obj, span} = pat;
+            obj = this.getPatternBounds(obj, out-bindings);
+            this.factory.NCase(obj, tag, span)
+        end end
+    end,
+
+    doAssignment: funct this (lhs-pat, rhs-scheme, final)
+        out-bindings = new-map-mut(_);
+        bound = this.getPatternBounds(lhs-pat, out-bindings);
+
+        do for let (name, (type, expl)) in out-bindings then
+            this.setVar(name, Scheme(rhs-scheme.uni, type, 0), expl);
+            if final then this.final.set(name, expl) end;
+        end;
+        this.solveAndDrop(rhs-scheme, bound);
+    end,
+
+    getTypeField: funct this (scheme, name, span)
+        uni = this.factory;
+        let {n, p} = uni.VarPair();
+        this.solve(scheme.t, uni.NObj(new-map([(name, [n])]), new-map(_), span));
+        Scheme(scheme.uni, p, 0)
+    end,
+
+    _solveCondTypeBinop: funct this (ast, cond-expl)
+        let case Binop{lhs, op, rhs} = ast;
+        if op == "&&" || (op == "||").0 then
+            env2 = this.solveCondType(lhs, cond-expl);
+            if op == "&&" then
+                env3 = env2.solveCondType(rhs, cond-expl);
+                this.join(env2);
+            else
+                env3 = this.solveCondType(rhs, cond-expl);
+                env3.join(env2);
+            end;
+            env3
+        else
+            return = null;
+            if op == "==" || (op == "!=").0 then
+                if let case Varb{name: lhs-name} = lhs then
+                    if let case Varb{name: rhs-name} = rhs then
+                        rhslit = this.getLitType(rhs-name);
+                        if rhslit != null then
+                            if (let case Null() = rhslit).0 || (let case Undef() = rhslit).0 then
+                                filters = (FILTER.NULL, FILTER.NOTNULL);
+                                if let case Undef() = rhslit then
+                                    filters = (FILTER.UNDEF, FILTER.NOTUNDEF);
+                                end;
+                                if op == "!=" then filters = (filters.1, filters.0); end;
+
+                                env2 = this.copy();
+                                env2.filterBinding(lhs-name, filters.0);
+                                this.filterBinding(lhs-name, filters.1);
+                                return = env2;
+                            end;
+                        end;
+                    end;
+                end;
+            end;
+            return
+        end
+    end,
+
+    _solveCondTypeAssign: funct this (tag, ast)
+        let case Assign{lhs, rhs} = ast;
+        filters = filter-case(tag);
+
+        (* Evaluate RHS *before* splitting state *)
+        rhs-orig = this.getType(rhs);
+
+        trueb = this.copy();
+        falseb = this;
+
+        if let case Varb{name} = rhs then
+            trueb.filterBinding(name, filters.0);
+            falseb.filterBinding(name, filters.1);
+        end;
+
+        rhs = trueb.filterScheme(rhs-orig, filters.0);
+        trueb.doAssignment(lhs, rhs, false);
+        trueb
+    end,
+
+    _solveCondTypeField: funct this (tuple-expr, name, cond-expl)
+        return = null;
+        if let case Obj{pairs} = tuple-expr then
+            last = pairs.last();
+            if last != _ && (last.key == name).0 then
+                do for let {key, expr} in pairs then
+                    if key == name then
+                        return = this.solveCondType(expr, cond-expl);
+                    else
+                        this.getType(expr).drop();
+                    end;
+                end;
+            end;
+        end;
+        return
+    end,
+
+    solveCondType: funct this (ast, cond-expl)
+        (*
+            Evaluates ast in a conditional context. Returns a new env with the changes
+            applied for the "true" block of an if expression, while the changes for the
+            "false" block are applied to _this_ in place.
+        *)
+
+        return = null;
+        if this.context.fut == null then
+            if let case Semi{lhs, rhs} = ast then
+                this.getType(lhs).drop();
+                return = this.solveCondType(rhs, cond-expl);
+            else if let case Binop{} = ast then
+                return = this._solveCondTypeBinop(ast, cond-expl);
+            else if let case Assign{lhs, rhs} = ast then
+                if this.factory == this.s.factory then
+                    if let case CasePat{tag} = lhs then
+                        return = this._solveCondTypeAssign(tag, ast);
+                    end;
+                end;
+            else if let case Field{expr, name, field-span} = ast then
+                this._checkPhantom(name, field-span);
+                return = this._solveCondTypeField(expr, name, cond-expl);
+            end end end end;
+        end;
+
+        if return != null then
+            return
+        else
+            (* Expression did not require special handling for conditional contexts,
+                so just evaluate it normally. *)
+            e = this.getType(ast);
+            this.solveAndDrop(e, this.factory.NBool(cond-expl));
+            this.copy()
+        end
+    end,
+
+    _getTypeSemi: funct this (ast)
+        let case Semi{lhs: ast-lhs, rhs: ast-rhs} = ast;
+        (* Do recursive eval iteratively *)
+        stack = new-list-mut([ast-lhs]);
+        do while node = stack.pop(); node != _ then
+            if let case Semi{rhs, lhs} = node then
+                stack.push(rhs);
+                stack.push(lhs);
+            else
+                this.getType(node).drop();
+            end;
+        end;
+        this.getType(ast-rhs)
+    end,
+
+    _getTypeUnsafe: funct this (ast)
+        let case Unsafe{expr} = ast;
+
+        let {unsafe} = this.context;
+        this.context.unsafe = true;
+            e = this.getType(expr);
+        this.context.unsafe = unsafe;
+        e
+    end,
+
+    _getTypeBinop: funct this (ast)
+        let case Binop{lhs, op, rhs, span} = ast;
+
+        if op == "&&" || (op == "||").0 then
+            env2 = this.solveCondType(lhs, span);
+            e2 = if op == "&&" then env2 else this end.getType(rhs);
+            this.join(env2);
+            this.solveAndDrop(e2, this.factory.NBool(span));
+            t = this.factory.PBool(span);
+        else
+            e1 = this.getType(lhs);
+            e2 = this.getType(rhs);
+            (* == != *)
+            if s.includes("!==", op) then
+                e1.drop();
+                e2.drop();
+                t = this.factory.PBool(span);
+            (* < <= > >= *)
+            else if s.includes("<=>=", op) then
+                this.solveAndDrop(e1, this.factory.NNum(span));
+                this.solveAndDrop(e2, this.factory.NNum(span));
+                t = this.factory.PBool(span);
+            (* + - * & | ^ << >> >>> *)
+            else if s.includes("+-*&|^<<>>>", op) then
+                this.solveAndDrop(e1, this.factory.NInt(span));
+                this.solveAndDrop(e2, this.factory.NInt(span));
+                t = this.factory.PInt(span);
+            (* +. -. *. / % ** *)
+            else if s.includes("+.-.**./%", op) then
+                this.solveAndDrop(e1, this.factory.NNum(span));
+                this.solveAndDrop(e2, this.factory.NNum(span));
+                t = this.factory.PNum(span);
+            else if op == "+'" then
+                this.solveAndDrop(e1, this.factory.NStr(span));
+                this.solveAndDrop(e2, this.factory.NStrOrNum(span));
+                t = this.factory.PStr(span);
+            (* <' >' <=' >=' *)
+            else
+                this.solveAndDrop(e1, this.factory.NStr(span));
+                this.solveAndDrop(e2, this.factory.NStr(span));
+                t = this.factory.PBool(span);
+            end end end end end;
+        end;
+        Scheme(this.factory.uni, t, 0)
+    end,
+
+    _getTypeFuture: funct this (ast)
+        let case Future{lhs, rhs, span} = ast;
+
+        if !this._checkPoly("assignments", span) then
+            let {n, p} = this.factory.VarPair();
+            rhs-placeholder = Scheme(this.factory.uni, p, 0);
+            this.doAssignment(lhs, rhs-placeholder, true);
+
+            let {fut} = this.context;
+            this.context.fut = span;
+                e = this.getType(rhs);
+            this.context.fut = fut;
+
+            this.solveAndDrop(e, n);
+        end;
+        Scheme(this.factory.uni, this.factory.PBool(span), 0)
+    end,
+
+    _getTypeAssign: funct this (ast)
+        let case Assign{poly, poly-span, lhs, rhs, span} = ast;
+        poly-span != null && this._checkPragma("rank1-types", "polymorphic code", poly-span);
+
+        if !this._checkPoly("assignments", span) then
+            if let case VarPat{name} = lhs then
+                if poly-span != null then
+                    old = this.factory;
+                    this.factory = Factory(Universe(), poly-span);
+                        (*print("push factory ", this.factory.uni._id, "old", old.uni._id);*)
+                        result = this.getType(rhs);
+                        this.factory.uni.locked = true;
+                        (*print("pop factory ", this.factory.uni._id, "old", old.uni._id, this.factory.poly-count, poly);*)
+
+                        if this.factory.poly-count > poly then
+                            this.reportError(poly-span.print(
+                                "Error: Expected at least " +' this.factory.poly-count +' " $s, but found only " +' poly));
+                            (* return dummy scheme so we can keep going and find other compile errors *)
+                            result.drop();
+                            result = this.dummySchemePoly();
+                        else
+                            result = Scheme(result.uni, result.t, poly);
+                        end;
+
+                    this.factory = old;
+                    this.setVar(name, result, span);
+                else
+                    if (this.context.fut == null).0 && let case Varb{name: rname, span: rhs-span} = rhs then
+                        this.directAssignment(name, rname, span, rhs-span);
+                    else
+                        this.setVar(name, this.getType(rhs), span);
+                    end;
+                end;
+            else
+                this.doAssignment(lhs, this.getType(rhs), false);
+            end;
+        end;
+        Scheme(this.factory.uni, this.factory.PBool(span), 0)
+    end,
+
+    processImport: funct this (ast)
+        let {lhs, extern, path, span} = ast;
+        if extern then
+            this._checkPragma("foreign-function-interface", "external imports", span);
+        end;
+
+        dummy-scheme = this.dummySchemePoly();
+        get-export = funct(k) dummy-scheme.clone() end;
+        if !extern then
+            if res = this.s.mods.src-path.resolve(path, span); res != null then
+                let {exports} = res.types3;
+                get-export = funct(k) exports.get(k) end;
+            end;
+        end;
+
+        do for let {key, name, span: kspan} in lhs then
+            rc = get-export(key);
+            if rc == _ then
+                this.reportError(kspan.print(
+                    "TypeError: " +' key +' " does not exist in imported module."))
+            else
+                this.setVar(name, rc.clone(), kspan);
+            end;
+        end;
+        dummy-scheme.drop();
+    end,
+
+    _getTypeCall: funct this (ast)
+        let case Call{expr, params, span} = ast;
+
+        args = new-map-mut(_);
+        scheme =
+            if let case Field{expr, name, field-span} = expr then
+                this._checkPhantom(name, field-span);
+                e = this.getType(expr);
+                args.set("this", [e.t.ref()]);
+                this.getTypeField(e, name, field-span)
+            else
+                this.getType(expr)
+            end;
+        ret-type = scheme.t;
+
+        do for let (i, arg) in enumerate(params) then
+            scheme = this.getType(arg);
+            args.set("" +' i, [scheme.t]);
+        end;
+
+        let {n, p} = this.factory.VarPair();
+        this.solve(ret-type, this.factory.NFunc(args, n, span, this.context.unsafe));
+        Scheme(this.factory.uni, p, 0)
+    end,
+
+
+    _getTypeObj: funct this (ast)
+        let case Obj{pairs: ast-pairs, span: obj-span} = ast;
+
+        key-expls = new-map-mut(_);
+        reads = new-map-mut(_);
+        writes = new-map-mut(_);
+
+        do for let {key, expr, mutable, span} in ast-pairs then
+            this._checkPhantom(key, span);
+            if prev = key-expls.get(key); prev != _ then
+                if prev != null then
+                    this.reportError(
+                        span.print("Error: duplicate key '" +' key +' "' in object literal") +' NL +'
+                        prev.print("Note: key '" +' key +' "' was previously defined here")
+                    );
+                end;
+            else
+                let {t} = this.getType(expr);
+                key-expls.set(key, span);
+                if mutable then
+                    if this._checkPoly("mutable objects", span) then
+                        (* If there is an error, create a fake mutable pair so we can
+                            continue without throwing spurious errors down the line *)
+                        writes.set(key, [this.factory.Top()]);
+                        reads.set(key, [t]);
+                    else
+                        let {n, p} = this.factory.VarPair();
+                        writes.set(key, [n]);
+                        reads.set(key, [t, p]);
+                    end;
+                else
+                    reads.set(key, [t]);
+                end;
+            end;
+        end;
+
+        t = this.factory.PObj(reads, writes, obj-span);
+        Scheme(this.factory.uni, t, 0)
+    end,
+
+    _getTypeIf: funct this (ast)
+        let case If{cond, thenb, elseb, span} = ast;
+
+        cond-is-true = false;
+        if let case Varb{name} = cond then
+            if name == "true" then
+                cond-is-true = this.getLitType(name) != null;
+            end;
+        end;
+
+        env2 = this.solveCondType(cond, span);
+        e2 = env2.getType(thenb);
+
+        let {dead} = this.context;
+        this.context.dead = dead || cond-is-true;
+            e3 = if elseb != null then
+                    this.getType(elseb)
+                else
+                    Scheme(this.factory.uni, this.factory.PUndef(span), 0)
+                end;
+        this.context.dead = dead;
+
+        this.join(env2, span);
+        merge-schemes(this.factory, e2, e3)
+    end,
+
+    _getTypeList: funct this (ast)
+        let case List{vals, span} = ast;
+
+        let {n, p} = this.factory.VarPair();
+        do for let (spread, expr, arg-span) in vals then
+            e = this.getType(expr);
+            if spread then
+                e = this.getTypeField(e, "@iterable", arg-span);
+            end;
+
+            this.solve(e.t, n.ref());
+        end;
+        n.drop(this.factory.gc);
+
+        len = this.factory.PInt(span);
+        attrs = new-map([("@iterable", [p]), ("length", [len])]);
+        t = this.factory.PObj(attrs, new-map(_), span);
+        Scheme(this.factory.uni, t, 0)
+    end,
+
+    _checkFuture: funct this (label, span)
+        fut-span = this.context.fut;
+        if fut-span != null then
+            this.reportError(
+                span.print("Error: " +' label +' " are not allowed within future assignments.") +' NL +'
+                fut-span.print("Note: future assignment begins here")
+            );
+        end;
+        fut-span != null
+    end,
+
+    _getPolyErrorMessage: funct this()
+        let {expl} = this.factory;
+        (* expl will never actually be null, but the compiler doesn't know that *)
+        if expl == null then "" else NL +' expl.print("Note: polymorphic context begins here") end
+    end,
+
+    _checkPoly: funct this (label, span)
+        if this.factory.uni != this.s.factory.uni then
+            this.reportError(span.print("Error: " +' label +' " are not allowed within unguarded polymorphic contexts.")
+                +' this._getPolyErrorMessage());
+        end;
+        this.factory.uni != this.s.factory.uni
+    end,
+
+    _checkPragma: funct this (pragma, label, span)
+        let {pragmas} = this.s.consts;
+        if !pragmas.has(pragma) then
+            this.reportError(span.print(
+                "Error: " +' label +' " requires pragma '" +' pragma +' "' to be defined.") +' NL +'
+                "Note: pragmas defined are " +' stringify([...pragmas]));
+
+            (* Add to pragmas to avoid duplicate compile errors for the same issue *)
+            pragmas.add(pragma);
+            true
+        else
+            false
+        end
+    end,
+
+    _checkPhantom: funct this (name, span)
+        if !this.context.dead && s.includes(name, "@") then
+            this.reportError(span.print("Error: phantom fields can only be used within dead code."));
+        end;
+    end,
+
+    getType: funct this (ast)
+        s = this._getType(ast);
+        (*print("getType", s.uni._id, s.t._id, this.factory.uni._id);*)
+        s
+    end,
+
+    _getType: funct this (ast)
+        if let case Varb{name, span} = ast then
+            if this._checkFuture("variable references", span) then
+                this.dummyScheme()
+            else
+                this.getVar(name, span)
+            end;
+        else if let case String{span} = ast then
+            Scheme(this.factory.uni, this.factory.PStr(span), 0)
+        else if let case JS{span} = ast then
+            this._checkPragma("foreign-function-interface", "embedded Javascript", span);
+            this.dummyScheme()
+        else if let case Semi{} = ast then
+            this._getTypeSemi(ast)
+        else if let case Not{expr, span} = ast then
+            this.solveAndDrop(this.getType(expr), this.factory.NBool(span));
+            Scheme(this.factory.uni, this.factory.PBool(span), 0)
+        else if let case Unsafe{} = ast then
+            this._getTypeUnsafe(ast)
+        else if let case Binop{} = ast then
+            this._getTypeBinop(ast)
+        else if let case Future{} = ast then
+            this._getTypeFuture(ast)
+        else if let case Assign{} = ast then
+            this._getTypeAssign(ast)
+        else if let case Field{expr, name, field-span} = ast then
+            this._checkPhantom(name, field-span);
+            this.getTypeField(this.getType(expr), name, field-span)
+        else if let case SetField{lhs, rhs, name, span} = ast then
+            this._checkPhantom(name, span);
+            e1 = this.getType(lhs);
+            e2 = this.getType(rhs);
+            this.solveAndDrop(e1, this.factory.NObj(new-map(_), new-map([(name, [e2.t])]), span));
+            Scheme(this.factory.uni, this.factory.PBool(span), 0)
+        else if let case Call{span} = ast then
+            if this._checkFuture("function calls", span) || this._checkPoly("function calls", span) then
+                this.dummyScheme()
+            else
+                this._getTypeCall(ast)
+            end;
+        else if let case Obj{} = ast then
+            this._getTypeObj(ast)
+        else if let case Case{tag, obj, span} = ast then
+            let {t} = this.getType(obj);
+            case-t = this.factory.PCase(t, tag, span);
+            Scheme(this.factory.uni, case-t, 0)
+        else if let case If{} = ast then
+            this._getTypeIf(ast)
+        else if let case Funct{} = ast then
+            this.getFuncType(ast)
+        else if let case List{} = ast then
+            this._getTypeList(ast)
+        else if let case While{cond, body, span} = ast then
+            if !this._checkFuture("loops", span) && !this._checkPoly("loops", span) then
+                this.doLoop(ast, body);
+            end;
+            Scheme(this.factory.uni, this.factory.PUndef(span), 0)
+        else let case For{lhs, range, body, span} = ast;
+            if !this._checkFuture("loops", span) && !this._checkPoly("loops", span) then
+                this.doLoop(ast, body);
+            end;
+            Scheme(this.factory.uni, this.factory.PUndef(span), 0)
+        end end end end end end end end end end end end end end end end end end
+    end,
+
+    doLoop: funct this (ast, body)
+        (* Evaluate range expr before splitting state *)
+        if let case For{lhs, range, span} = ast then
+            ele-type = this.getTypeField(this.getType(range), "@iterable", span);
+        else
+            ele-type = null;
+        end;
+
+        (* replace non-final bindings with temporary vars *)
+        loopvars = new-map-mut(_);
+        do for let (name, rc) in this.bindings then
+            (* final vars guaranteed not to be reassigned in loop, so we can leave them untouched *)
+            if !this.final.has(name) then
+                let {n, p} = this.factory.VarPair();
+                this.solveAndDrop(rc.moveInto(this.factory), n.ref());
+
+                loopvars.set(name, n);
+                this.bindings.set(name, Scheme(this.factory.uni, p, 0));
+            end;
+        end;
+
+        if let case For{lhs, range, span} = ast then
+            env2 = this.copy();
+            if ele-type != null then (* always true *)
+                env2.doAssignment(lhs, ele-type, false);
+            end;
+        else let case While{cond, span} = ast;
+            env2 = this.solveCondType(cond, span);
+        end;
+
+        env2.getType(body).drop();
+
+        (* now close the loop *)
+        do for let (name, bound) in loopvars then
+            (* span is useless here, but the check will never fail anyway *)
+            rc = env2.getVar(name, span);
+
+            (* unnecessary copy here, but it shouldn't be a big deal *)
+            env2.dropBinding(name);
+            env2.solveAndDrop(rc, bound);
+        end;
+        env2.dropAllBindings();
+
+        do for let (name, expl) in env2.final then
+            this.final.set(name, expl);
+        end;
+    end,
+
+    checkAssignments: funct this ()
+        do for let (name, read-expl) in this.s.nonlocals then
+            write-expl = this.s.assignments.get(name);
+            if write-expl != _ then
+                this.reportError(
+                    read-expl.print("Error: Variable " +' name +' " is referenced before assignment.")
+                    +' NL +'
+                    write-expl.print("Note: " +' name +' " is assigned here.")
+                );
+            end;
+        end;
+    end,
+
+    finishScope: funct this (ast)
+        this.checkAssignments();
+        this.dropAllBindings();
+        this.s.consts.defsmap.set(ast, new-set(this.s.assignments.keys()));
+    end,
+
+    getFuncType: funct this (ast)
+        let case Funct{unsafe, thisp, params, expr, span: funct-span} = ast;
+        scope = this.s.childScope(this);
+        context = {fut: null, unsafe: unsafe != null, dead: this.context.dead};
+        env = Bindings(scope, new-map-mut(_), new-map-mut(_), context, scope.factory);
+
+        param-typesets = new-map-mut(_);
+
+        add-param = funct(lbl, param)
+            let {name, span} = param;
+
+            let {n, p} = this.factory.VarPair();
+            set = new-set-mut([n]);
+            param-typesets.set(lbl, set);
+            env.setVar(name, Scheme(this.factory.uni, p, 0), span);
+        end;
+
+        if thisp != null then
+            add-param("this", thisp)
+        end;
+        do for let (i, param) in enumerate(params) then
+            add-param(""+'i, param);
+        end;
+
+        (* now process function body *)
+        body-scheme = env.getType(expr);
+        ret-typeset= new-set-mut([body-scheme.t]);
+
+        env.finishScope(ast);
+
+        result-t = this.factory.PFunc(param-typesets, ret-typeset, funct-span, unsafe);
+        Scheme(this.factory.uni, result-t, 0)
+    end,
+} end;
+
+universe = Universe();
+getUniverse = funct() universe end;
+
+getType = funct(mods, src-path, ast, reporter, prelude)
+    let case Mod{span: mod-span, expr: mod-expr, pragmas, imports} = ast;
+    pragmas = new-set-mut(pragmas);
+
+    defsmap = new-map-mut(_);
+    solver = Solver(reporter);
+    consts = {universe,  mods: {src-path}, reporter, solver, defsmap, pragmas};
+    bindings = null;
+    if prelude != null then
+        prelude-scope = Scope(consts, bindings);
+        bindings = Bindings(
+            prelude-scope, prelude.types3.exports, new-map-mut(_), null, prelude-scope.factory
+        );
+    end;
+
+
+    scope = Scope(consts, bindings);
+    env = Bindings(scope, new-map-mut(_), new-map-mut(_), null, scope.factory);
+
+    do for _import in imports then
+        env.processImport(_import);
+    end;
+    env.getType(mod-expr).drop();
+
+    exports = new-map-mut(_);
+    do for let (name, rc) in env.bindings then
+        if scope.isExported(name) then
+            exports.set(name, rc);
+            env.bindings.delete(name);
+        end;
+    end;
+
+    env.finishScope(ast);
+    let {s: {nonlocals}} = env;
+    {exports, defsmap, nonlocals}
+end;

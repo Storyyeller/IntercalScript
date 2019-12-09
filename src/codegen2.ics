@@ -1,0 +1,672 @@
+#import {s} from "std:strings"
+#import {is-es-id, mangle, to-es-prop, StringFormat} from "esnames2"
+#import {get-literal-type} from "literals"
+
+FREEZE-OBJS = false;
+USE-MODULES = true;
+
+(* precedence levels for use in codegen *)
+PRIMARY = 0;
+MEMBER = 1;
+CALL = 2;
+LHS = 3;
+UNARY = 4;
+EXPONENT = 5;
+MULT = 6;
+ADD = 7;
+SHIFT = 8;
+RELATION = 9;
+EQUALITY = 10;
+BITAND = 11;
+BITXOR = 12;
+BITOR = 13;
+LOGAND = 14;
+LOGOR = 15;
+TERNARY = 16;
+ASSIGN = 17;
+EXPR = 18;
+BLOCKITEM = 19;
+MODITEM = 20;
+
+let Context future = funct(lvl, is-stmt-start, used) {
+    lvl, is-stmt-start, used,
+    stmt: lvl >= BLOCKITEM,
+    unused: funct () Context(lvl, is-stmt-start, false) end,
+} end;
+
+OPLEVELS = new-map([
+    ("**", EXPONENT),
+    ("*.", MULT), ("/", MULT), ("%", MULT),
+    ("+.", ADD), ("-.", ADD), ("+'", ADD),
+    ("<<", SHIFT), (">>", SHIFT), (">>>", SHIFT),
+
+    ("<", RELATION), (">", RELATION), ("<=", RELATION), (">=", RELATION),
+    ("<'", RELATION), (">'", RELATION), ("<='", RELATION), (">='", RELATION),
+
+    ("==", EQUALITY), ("!=", EQUALITY),
+    ("&", BITAND),
+    ("^", BITXOR),
+    ("|", BITOR),
+    ("&&", LOGAND),
+    ("||", LOGOR),
+]);
+
+unpack-semi = funct(ast)
+    statements = eml();
+    stack = new-list-mut([ast]);
+    do while ast = stack.pop(); ast != _ then
+        if let case Semi{lhs, rhs} = ast then
+            stack.push(rhs);
+            stack.push(lhs);
+        else
+            statements.push(ast)
+        end
+    end;
+    statements
+end;
+
+let Compiler future = funct(consts, symbols, indent, ctx) {
+    consts, out: consts.out, symbols,
+    indent mut: indent,
+    ctx mut: ctx,
+    deferred mut: "",
+
+    internalError: funct this() this.consts.mods.reporter.internalError() end,
+
+    withScope: funct this (ast)
+        assignments = consts.data.types3.defsmap.get(ast);
+        if assignments == _ then
+            this.internalError();
+            assignments = [];
+        end;
+
+        symbols = new-set([...this.symbols, ...assignments]);
+        Compiler(this.consts, symbols, this.indent, this.ctx);
+    end,
+
+    indented: funct this () Compiler(this.consts, this.symbols, this.indent + 1, this.ctx) end,
+
+    withContext: funct this (lvl, is-stmt-start, used)
+        Compiler(this.consts, this.symbols, this.indent, Context(lvl, is-stmt-start, used))
+    end,
+
+    as: funct this (lvl)
+        (* assert(!this.ctx.stmt); *)
+        this.withContext(lvl, this.ctx.is-stmt-start, this.ctx.used)
+    end,
+
+    rhs: funct this () let {lvl, is-stmt-start, used} = this.ctx; this.withContext(lvl, false, used) end,
+    used: funct this () let {lvl, is-stmt-start, used} = this.ctx; this.withContext(lvl, is-stmt-start, true) end,
+    unused: funct this () let {lvl, is-stmt-start, used} = this.ctx; this.withContext(lvl, is-stmt-start, false) end,
+
+    defer: funct this (s)
+        this.deferred = s +' this.deferred;
+    end,
+
+    sol: funct this () s.repeat("  ", this.indent) end,
+
+    _ensure: funct this (lvl, need-parens-at-start)
+        (* assert(lvl < BLOCKITEM); *)
+
+        if this.ctx.stmt then
+            this.out(this.sol());
+            if this.ctx.used then
+                this.out("return ");
+                this.ctx = Context(EXPR, false, true);
+            else
+                this.ctx = Context(EXPR, true, false);
+            end;
+            this.defer(";
+");
+        end;
+
+        (* wrap in parens *)
+        if this.ctx.lvl < lvl || (need-parens-at-start && this.ctx.is-stmt-start).0 then
+            this.out("(");
+            this.defer(")");
+            this.ctx = Context(EXPR, false, this.ctx.used);
+        end;
+    end,
+    ensure: funct this (lvl) this._ensure(lvl, false) end,
+    ensure-nostart: funct this () this._ensure(PRIMARY, true) end,
+
+    outnl: funct (line) consts.out(line); consts.out(NL); end,
+
+    nameToKeyPair: funct this (name)
+        key = to-es-prop(name);
+        val = mangle(name);
+        if key == val then
+            key
+        else
+            key +' ": " +' val
+        end
+    end,
+
+    makeReserved: funct this()
+        i = this.consts.reserved-counter;
+        this.consts.reserved-counter = i + 1;
+        "_$" +' i
+    end,
+
+    isLiteral: funct this(name)
+        !this.symbols.has(name)
+    end,
+
+    doImport: funct this(import-parts, path)
+        if this.consts.use-modules then
+            this.out("import {");
+            this.out(map(import-parts, funct(t) t.0 +' " as " +' t.1 end).join(", "));
+            this.out("} from ");
+            this.out(StringFormat.to-lit(path));
+            this.outnl(";");
+        else
+            this.out("const {");
+            this.out(map(import-parts, funct(t) t.0 +' ": " +' t.1 end).join(", "));
+            this.out("} = require(");
+            this.out(StringFormat.to-lit(path));
+            this.outnl(");");
+        end;
+    end,
+
+    enterScope: funct this (ast, prelude)
+        (* assert(this.ctx.stmt); *)
+
+        params = [];
+        (let case Mod{thisp} = ast).0 ||
+            (let case Funct{thisp, params} = ast).0;
+
+        let {nonlocals, defsmap} = this.consts.data.types3;
+        assignments = defsmap.get(ast);
+        if assignments == _ then
+            this.internalError();
+            assignments = [];
+        end;
+
+        vars = new-set-mut(assignments);
+
+        do for let {name} in params then vars.delete(name) end;
+        if thisp != null then vars.add(thisp.name) end;
+
+        (* $ is used as temp var when compiling if let = case exprs *)
+        exportp = "";
+        if let case Mod() = ast then
+            vars.add("$");
+            if this.consts.use-modules then
+                exportp = "export ";
+            end;
+        end;
+
+        let {out, outnl} = this;
+        import-parts = eml();
+        if prelude != null then
+            let {mods, data} = this.consts;
+            prelude-exports = prelude.types3.exports;
+            used = filter(nonlocals.keys(), funct(n) prelude-exports.has(n) end);
+            path = s.sliceE(mods.relative(data.out-path, prelude.out-path), 1);
+
+            do for name in used then
+                vars.add(name);
+                alias = this.makeReserved();
+                import-parts.push((mangle(name), alias));
+            end;
+
+            if import-parts.length > 0 then
+                this.doImport(import-parts, path);
+            end;
+        end;
+
+        if vars.size > 0 then
+            namelist = map(vars, mangle);
+            s.sort(namelist);
+            outnl(this.sol() +' exportp +'  "var " +' namelist.join(", ") +' ";");
+        end;
+        do for let (mangled, alias) in import-parts then
+            outnl(mangled +' " = " +' alias +' ";");
+        end;
+
+        if thisp != null then
+            outnl(this.sol() +' mangle(thisp.name) +' " = this;");
+        end;
+    end,
+
+    compileModule: funct this (ast, import-prelude)
+        let case Mod{expr, imports} = ast;
+        this.enterScope(ast, import-prelude);
+        do for _import in imports then
+            this.compileImport(_import);
+        end;
+        this.compile(expr);
+
+        if !this.consts.use-modules then
+            exports = [...this.consts.data.exported-ids];
+            pairs = map(exports, mangle);
+            s.sort(pairs);
+            this.outnl("module.exports = {" +' pairs.join(", ") +' "};");
+        end;
+    end,
+
+    compileObjLitSub: funct this (pairs, tag)
+        (* optimization - compile tuples to arrays *)
+        ipairs = new-list(enumerate(pairs));
+        if tag == null && ipairs.every(funct(t) ""+'t.0 == t.1.key end) then
+            this.ensure(PRIMARY);
+
+            first = true;
+            this.out("[");
+            do for let {expr} in pairs then
+                if first then first = false else this.out(", ") end;
+                this.rhs().used().as(ASSIGN).compile(expr);
+            end;
+            this.out("]");
+        else
+            this.ensure-nostart();
+            this.out("{");
+            first = true;
+
+            if tag != null then
+                first = false;
+                this.out("[Symbol.toStringTag]: " +' StringFormat.to-lit(tag));
+            end;
+
+            do for let {key, expr} in pairs then
+                if first then first = false else this.out(", ") end;
+
+                prop = to-es-prop(key);
+                if (let case Varb{name} = expr).0 && (mangle(name) == prop).0 then
+                    this.out(prop);
+                else
+                    this.out(prop +' ": ");
+                    this.rhs().used().as(ASSIGN).compile(expr);
+                end;
+            end;
+            this.out("}");
+        end;
+    end,
+
+    compileObjLit: funct this (pairs, tag)
+        if !FREEZE-OBJS then
+            this.compileObjLitSub(pairs, tag);
+        else
+            is-mut = pairs.some(funct(pair) pair.mutable end);
+            this.ensure(CALL);
+            this.out(if is-mut then "Object.seal(" else "Object.freeze(" end);
+            this.used().as(ASSIGN).compileObjLitSub(pairs, tag);
+            this.out(")");
+        end;
+    end,
+
+    compile: funct this (ast) this._compile(ast, false) end,
+    compileCallLHS: funct this (ast) this._compile(ast, true) end,
+
+    _compile: funct this (ast, is-call-lhs)
+        (* deferred is never cleared, so this means compile is only called once per Compiler instance? *)
+        (* assert(this.deferred == ""); *)
+
+        if !is-call-lhs then
+            if (let case Field{name, expr} = ast).0 && (name == "0").0 then
+                if let case Obj{pairs} = expr then
+                    temp = pairs.get(0);
+                    if pairs.length == 1 && (temp != _).0 then
+                        ast = temp.expr;
+                    end;
+                end;
+            end;
+        end;
+
+        (* simplify if statements *)
+        (* if true then x else y end -> x *)
+        if let case If{cond, thenb} = ast then
+            if let case Varb{name} = cond then
+                if this.isLiteral(name) && (name == "true").0 then
+                    ast = thenb;
+                    (* is-call-lhs = false; useless but here for consistency *)
+                end;
+            end;
+        end;
+
+        do while let case Unsafe{expr: ast} = ast then _ end;
+
+        if let case Varb{name} = ast then
+            this.ensure(PRIMARY);
+            if !this.isLiteral(name) then
+                this.out(mangle(name));
+            else
+                (* literal *)
+                lit = get-literal-type(name);
+                (* todo *)
+                if lit != null && (let case Undef() = lit).0 then
+                    this.doVoid();
+                else if s.startsWith(name, "-") then
+                    this.ensure(UNARY);
+                    this.out(name);
+                else
+                    this.out(name);
+                end end;
+            end;
+        else if let case String{val} = ast then
+            this.ensure(PRIMARY);
+            this.out(StringFormat.to-lit(val));
+        else if let case Binop{lhs, op, rhs} = ast then
+            if op == "+" || (op == "-").0 then
+                this.ensure(UNARY);
+                this.out("~~(");
+                this.defer(")");
+                this.withContext(ADD, false, true).compile(lhs);
+                this.out(" " +' op +' " ");
+                this.withContext(MULT, false, true).compile(rhs);
+            else if op == "*" then
+                this.ensure(CALL);
+                this.out("Math.imul(");
+                this.rhs().used().as(EXPR).compile(lhs);
+                this.out(", ");
+                this.rhs().used().as(EXPR).compile(rhs);
+                this.out(")");
+            else
+                lvl = OPLEVELS.get(op);
+                if lvl == _ then
+                    this.internalError();
+                    lvl = EXPONENT;
+                end;
+
+                if op == "**" then
+                    lvl1 = UNARY;
+                    lvl2 = EXPONENT;
+                else
+                    lvl1 = lvl;
+                    lvl2 = lvl - 1;
+                end;
+
+                if s.endsWith(op, ".") || s.endsWith(op, "'") then
+                    opstr = s.slice(op, 0, 1);
+                else if op == "==" || (op == "!=").0 then
+                    opstr = op +' "=";
+                else
+                    opstr = op;
+                end end;
+
+                this.ensure(lvl);
+                this.used().as(lvl1).compile(lhs);
+                this.out(" " +' opstr +' " ");
+                this.rhs().used().as(lvl2).compile(rhs);
+            end end;
+        else if let case Not{expr} = ast then
+            this.ensure(UNARY);
+            this.out("!");
+            this.rhs().used().as(UNARY).compile(expr);
+        else if (let case Assign{lhs, rhs} = ast).0 || (let case Future{lhs, rhs} = ast).0 then
+            if (let case CasePat{tag, obj} = lhs).0 && this.ctx.used then
+                this.ensure(EXPR);
+
+                (* Optimization - don't use temp var if rhs is a variable *)
+                temp-name = "";
+                if let case Varb{name} = rhs then
+                    (* todo why cant' we merge the ifs? *)
+                    if !this.isLiteral(name) then
+                        temp-name = mangle(name);
+                    end;
+                end;
+
+                if temp-name == "" || (temp-name == _).0 then
+                    temp-name = "$";
+                    this.out("$ = ");
+                    this.rhs().used().as(ASSIGN).compile(rhs);
+                    this.out(", ");
+                end;
+
+                let case ObjPat{pairs} = obj;
+                if pairs.length == 0 then
+                    this.out(temp-name +' "[Symbol.toStringTag] === '" +' tag +' "'");
+                else
+                    this.out(temp-name +' "[Symbol.toStringTag] === '" +' tag +' "' && (");
+                    this.rhs().compilePattern(lhs);
+                    this.out(" = " +' temp-name +' ", true)");
+                end;
+            else
+                if this.ctx.used then
+                    this.ensure(EXPR);
+                    this.defer(", true");
+                else
+                    this.ensure(ASSIGN);
+                end;
+
+                this.compilePattern(lhs);
+                this.out(" = ");
+                this.rhs().used().as(ASSIGN).compile(rhs);
+            end;
+        else if let case Field{expr, name} = ast then
+            this.ensure(MEMBER);
+            this.as(MEMBER).compile(expr);
+            if is-es-id(name) then
+                this.out("." +' name);
+            else
+                this.out("['" +' name +' "']");
+            end;
+        else if let case SetField{lhs, name, rhs} = ast then
+            if this.ctx.used then
+                this.ensure(EXPR);
+                this.defer(", true");
+            else
+                this.ensure(ASSIGN);
+            end;
+
+            this.as(MEMBER).compile(lhs);
+            if is-es-id(name) then
+                this.out("." +' name);
+            else
+                this.out("['" +' name +' "']");
+            end;
+
+            this.out(" = ");
+            this.rhs().used().as(ASSIGN).compile(rhs);
+        else if let case Call{expr, params} = ast then
+            this.ensure(CALL);
+            this.used().as(CALL).compileCallLHS(expr);
+            this.out("(");
+            this.indent = this.indent + 1;
+
+            first = true;
+            do for param in params then
+                if first then first = false else this.out(", ") end;
+                this.rhs().used().as(ASSIGN).compile(param);
+            end;
+            this.out(")");
+        else if let case Obj{pairs} = ast then
+            this.compileObjLit(pairs, null);
+        else if let case Case{obj: case Obj{pairs}, tag} = ast then
+            this.compileObjLit(pairs, tag);
+        else if let case JS{code} = ast then
+            this.ensure(ASSIGN);
+            this.out(code);
+        else if let case Funct{params, expr} = ast then
+            this.ensure-nostart();
+
+            temp = this.withScope(ast);
+            temp.out("function(");
+            temp.out(map(params, funct(p) mangle(p.name) end).join(", "));
+            temp.outnl(") {");
+
+            temp2 = temp.indented().withContext(BLOCKITEM, false, true);
+            temp2.enterScope(ast, null);
+            temp2.compile(expr);
+            (* todo is this actually needed? *)
+            temp.out(temp.deferred);
+
+            this.out(this.sol() +' "}");
+        else if let case List{vals} = ast then
+            this.ensure(PRIMARY);
+
+            first = true;
+            this.out("[");
+            do for let (spread, expr) in vals then
+                if first then first = false else this.out(", ") end;
+
+                if spread then
+                    this.out("...");
+                end;
+                this.rhs().used().as(ASSIGN).compile(expr);
+            end;
+            this.out("]");
+        else if let case Semi{} = ast then
+            if !this.ctx.stmt then this.ensure(EXPR) end;
+
+            statements = unpack-semi(ast);
+            rhs = statements.pop();
+            if rhs == _ then
+                this.internalError();
+                rhs = ast;
+            end;
+
+            do for lhs in statements then
+                this.unused().compile(lhs);
+                if !this.ctx.stmt then this.out(", ") end;
+            end;
+            if this.ctx.stmt then
+                this.rhs().compile(rhs);
+            else
+                this.rhs().as(ASSIGN).compile(rhs);
+            end;
+        else if let case If{cond, thenb, elseb} = ast then
+            if this.ctx.stmt then
+                this.out(this.sol() +' "if (");
+                this.withContext(EXPR, false, true).compile(cond);
+                this.outnl(") {");
+                this.indented().rhs().compile(thenb);
+                this.out(this.sol() +' "}");
+
+                if elseb != null then
+                    this.out(" else ");
+                    if let case If{} = elseb then
+                        this.rhs().compile(elseb);
+                    else
+                        this.outnl("{");
+                        this.indented().rhs().compile(elseb);
+                        this.outnl(this.sol() +' "}");
+                    end;
+                else
+                    this.outnl("");
+                end;
+            else
+                this.ensure(TERNARY);
+                this.used().as(LOGOR).compile(cond);
+                this.out(" ? ");
+                this.rhs().as(ASSIGN).compile(thenb);
+                this.out(" : ");
+                temp = this.rhs().as(ASSIGN);
+                if elseb != null then
+                    temp.compile(elseb);
+                else
+                    temp.doVoid();
+                end;
+            end;
+        else if let case While{cond, body} = ast then
+            if !this.ctx.stmt then
+                this.ensure(CALL);
+                this.outnl("(() => {");
+                this.defer(this.sol() +' "})()");
+                this.ctx = Context(BLOCKITEM, false, this.ctx.used);
+            end;
+
+            this.out(this.sol() +' "while (");
+            this.withContext(EXPR, false, true).compile(cond);
+            this.outnl(") {");
+            this.indented().unused().rhs().compile(body);
+            this.outnl(this.sol() +' "}");
+        else let case For{lhs, range, body} = ast;
+            if !this.ctx.stmt then
+                this.ensure(CALL);
+                this.outnl("(() => {");
+                this.defer(this.sol() +' "})()");
+                this.ctx = Context(BLOCKITEM, false, this.ctx.used);
+            end;
+
+            this.out(this.sol() +' "for (");
+            this.withContext(LHS, false, true).compilePattern(lhs);
+            this.out(" of ");
+            this.withContext(ASSIGN, false, true).compile(range);
+            this.outnl(") {");
+            this.indented().unused().rhs().compile(body);
+            this.outnl(this.sol() +' "}");
+        end end end end end end end end end end end end end end end end;
+
+        this.out(this.deferred);
+    end,
+
+    compileImport: funct this (ast)
+        let {lhs, extern, path, span} = ast;
+
+        import-parts = eml();
+        do for let {key, name} in lhs then
+            alias = this.makeReserved();
+            import-parts.push((mangle(key), alias, mangle(name)));
+        end;
+
+        out-path = path; (* extern *)
+        if !extern then
+            let {mods, data} = this.consts;
+            module = data.src-path.resolve(path, span);
+            if module != null then
+                out-path = s.sliceE(mods.relative(data.out-path, module.out-path), 1);
+            end;
+        end;
+
+        this.doImport(import-parts, out-path);
+        do for let (key, alias, mangled) in import-parts then
+            this.outnl(mangled +' " = " +' alias +' ";");
+        end;
+    end,
+
+    compilePattern: funct this (pat)
+        if let case VarPat{name} = pat then
+            this.out(mangle(name));
+        else if let case ObjPat{pairs} = pat then
+            this.ensure-nostart();
+            this.out("{");
+            first = true;
+            do for let {key, pattern} in pairs then
+                if first then first = false else this.out(", ") end;
+                this.out(to-es-prop(key) +' ": ");
+                this.compilePattern(pattern);
+            end;
+            this.out("}");
+        else let case CasePat{obj} = pat;
+            this.compilePattern(obj);
+        end end;
+    end,
+
+    doVoid: funct this ()
+        (* if in statement, do nothing (produce empty statement/missing return) *)
+        if !this.ctx.stmt then
+            if this.ctx.used then
+                this.ensure(UNARY);
+                this.out("void 0");
+            else
+                this.out("0");
+            end;
+        end;
+    end,
+} end;
+
+for-module = funct(mods, out, data, symbols)
+    consts = {mods, out, data, use-modules: USE-MODULES, reserved-counter mut: 0};
+    Compiler(consts, symbols, 0, Context(MODITEM, false, false))
+end;
+
+compile = funct(mods, data, ast)
+    let {prelude} = mods;
+    if prelude != null then
+        let {types3: {defsmap, nonlocals}} = prelude;
+        symbols = defsmap.get(prelude.ast);
+    else
+        symbols = new-set(_);
+    end;
+
+    if symbols == _ then
+        mods.reporter.internalError(); ""
+    else
+        source = {s mut: ""};
+        out = funct(s) source.s = source.s +' s end;
+        compiler = for-module(mods, out, data, symbols).withScope(ast);
+        compiler.compileModule(ast, prelude);
+        source.s
+    end
+end;

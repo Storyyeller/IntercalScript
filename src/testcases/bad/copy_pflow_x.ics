@@ -1,0 +1,4 @@
+{-# language foreign-function-interface #-}
+{-# language rank1-types #-}
+id = $funct(x) if x != null then x else `` end end;
+id(false) + 4

@@ -1,0 +1,4 @@
+x = undef;
+if x != undef then
+    x + 2;
+end;

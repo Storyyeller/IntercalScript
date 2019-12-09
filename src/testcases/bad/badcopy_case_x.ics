@@ -1,0 +1,3 @@
+{-# language rank1-types #-}
+a = $case F{};
+a * 0;

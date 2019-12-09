@@ -1,0 +1,5 @@
+id = funct(x) x end;
+
+q = id({0});
+id({1});
+q.0

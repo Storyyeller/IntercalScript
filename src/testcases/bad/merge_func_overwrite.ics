@@ -1,0 +1,1 @@
+funct(x) x + 1; x() end(funct() _ end)

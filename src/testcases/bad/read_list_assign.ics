@@ -1,0 +1,5 @@
+results = eml();
+results.push("hello");
+do for tok in results then
+    tok % 6;
+end;

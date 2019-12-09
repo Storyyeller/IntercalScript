@@ -1,0 +1,26 @@
+export var $$, $split$ws, QUOTE, endsWith, fromCodePoint, includes, indexOf, lastIndexOf, len, match, repeat, replace, s, slice, sliceE, sort, split, startsWith, toLowerCase, toUpperCase, trim;
+len = s => s.length;
+indexOf = (s, p1) => s.indexOf(p1);
+lastIndexOf = (s, p1) => s.lastIndexOf(p1);
+slice = (s, p1, p2) => s.slice(p1, p2);
+sliceE = (s, p1) => s.slice(p1);
+split = (s, p1) => s.split(p1);
+$split$ws = s => s.split(/\s+/);
+trim = s => s.trim();
+startsWith = (s, p1) => s.startsWith(p1);
+endsWith = (s, p1) => s.endsWith(p1);
+toLowerCase = (s) => s.toLowerCase();
+toUpperCase = (s) => s.toUpperCase();
+repeat = (s, n) => s.repeat(n);
+includes = (s, s2) => s.includes(s2);
+match = (s, r) => s.match(r);
+replace = (s, old, new_) => s.split(old).join(new_);
+QUOTE = "\"";
+fromCodePoint = function(c) {
+  c = c & 2097151;
+  c = c % 1114112;
+  return String.fromCodePoint(c);
+};
+sort = strs => strs.sort();
+0;
+s = {len, indexOf, lastIndexOf, slice, sliceE, split, "split-ws": $split$ws, trim, startsWith, endsWith, toLowerCase, toUpperCase, repeat, includes, match, replace, QUOTE, fromCodePoint, sort};

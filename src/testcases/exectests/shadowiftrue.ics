@@ -1,0 +1,6 @@
+true = false;
+if true then
+    x = 4;
+else
+    print(234234);
+end;

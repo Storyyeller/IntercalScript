@@ -1,0 +1,64 @@
+{-# language foreign-function-interface #-}
+
+#import {s} from "std:strings"
+
+#import {read, write} from "../file-utils"
+#import {tokenize} from "../tokenize"
+
+args = `process`.argv.slice(2);
+
+format-file = funct(tokens)
+    words = eml();
+    do while tok = tokens.pop(); tok != _ then
+        text = tok.span.text();
+        if tok.type == "COMMENT" then
+            do for word in s.split-ws(text) then
+                words.push(word);
+            end;
+        else
+            words.push(text);
+        end;
+    end;
+
+    LINE-LENGTH = 80;
+    out = eml();
+    pos = 0;
+    do for word in words then
+        len = s.len(word);
+
+        if pos + 1 + len > LINE-LENGTH then
+            out.push(NL);
+            out.push(word);
+            pos = len;
+        else
+            out.push(" ");
+            out.push(word);
+            pos = pos + 1 + len;
+        end;
+    end;
+    s.trim(out.join("")) +' NL
+end;
+
+errors = 0;
+do for src-path in args then
+    res = read(src-path, null);
+    if let case Ok(source) = res then
+        res = tokenize(src-path, source, true);
+    end;
+    if let case Ok(tokens) = res then
+        new-source = format-file(tokens);
+        res = write(src-path, new-source, false, null);
+    end;
+    if let case Ok() = res then
+        print("Reformatted", src-path);
+    else let case Err(message) = res;
+        print(message);
+        errors = errors + 1;
+    end;
+end;
+
+if errors > 0 then
+    emsg = if errors == 1 then "error." else "errors." end;
+    print("Finished with", errors, emsg);
+    `process`.exit(1);
+end;

@@ -1,0 +1,53 @@
+#import {s} from "std:strings"
+
+(* keep compiler happy by ignoring impossible undefined values *)
+0-if-undef = funct(x) if x == _ then 0 else x end end;
+let binary-search-sub future = funct(vals, a, b, x)
+    (* Return the smallest index a <= i <= b such that vals[i] >= x *)
+
+    if a == b then
+        a
+    else
+        c = int(b - a / 2) + a;
+        temp = 0-if-undef(vals.get(c));
+        (*print(">", a, c, b, vals.get(a), vals.get(c), vals.get(b), x, temp < x);*)
+        if temp < x then
+            binary-search-sub(vals, c + 1, b, x)
+        else
+            binary-search-sub(vals, a, c, x)
+        end
+    end
+end;
+binary-search = funct(vals, x) binary-search-sub(vals, 0, vals.length - 1, x) end;
+
+line-nums-cache = new-map-mut(_);
+get-line-nums = funct(source)
+    res = line-nums-cache.get(source);
+    if res == _ then
+        temp = new-list-mut([-1]);
+        off = 0;
+        do for line in s.split(source, NL) then
+            off = off + s.len(line);
+            temp.push(off);
+            off = off + 1;
+        end;
+        temp.push(s.len(source));
+
+        res = new-list(temp);
+        line-nums-cache.set(source, res);
+    end;
+    res
+end;
+
+get-line-number-funcs = funct(source)
+    line-nums = get-line-nums(source);
+    {
+        line-start: funct(pos)
+            0-if-undef(line-nums.get(binary-search(line-nums, pos) - 1)) + 1
+        end,
+        line-end-and-count: funct(pos)
+            i = binary-search(line-nums, pos);
+            (0-if-undef(line-nums.get(i)), i - 1)
+        end,
+    }
+end;

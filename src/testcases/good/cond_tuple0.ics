@@ -1,0 +1,2 @@
+a = case Foo(1);
+(let case Bar(x) = a).0 && (x > 4).0

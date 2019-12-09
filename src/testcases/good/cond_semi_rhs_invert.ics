@@ -1,0 +1,4 @@
+x = null;
+do while _; x != null then
+    x + 4;
+end

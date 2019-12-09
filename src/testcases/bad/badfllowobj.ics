@@ -1,0 +1,5 @@
+id = funct(x) x end;
+
+q = id({a: {0}});
+id({a: {1}});
+q.a.0

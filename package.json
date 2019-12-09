@@ -1,0 +1,15 @@
+{
+    "name": "intercalscript",
+    "version": "0.0.2",
+    "description": "IntercalScript is a programming language for building simple and reliable software. It combines a simple and consistent syntax with a powerful type inference engine that eliminates runtime type errors.",
+    "homepage": "https://github.com/Storyyeller/IntercalScript",
+    "license": "SEE LICENSE",
+    "repository": "github:Storyyeller/IntercalScript",
+    "engines": {
+        "node": ">=12.2.0"
+    },
+    "bin": {
+        "ics": "./frozen/build2.mjs",
+        "icsfmt": "./frozen/formatter/format.mjs"
+    }
+}

@@ -1,0 +1,17 @@
+{-# language foreign-function-interface #-}
+
+let (sdfsddfs, range) = (5, 0);
+a = range(7);
+
+
+x = zip(`0`, `0`);
+
+module = "mdul";
+module = module;
+
+range2 = funct (88, hello, range, 5)
+    let {hello, world, 7} = 5;
+    module == zip;
+
+    88 +' hello; 5
+end;

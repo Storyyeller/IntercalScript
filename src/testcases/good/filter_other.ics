@@ -1,0 +1,5 @@
+funct(x)
+    if x == null then
+        x + 4
+    end;
+end("")

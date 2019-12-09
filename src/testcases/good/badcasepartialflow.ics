@@ -1,0 +1,5 @@
+
+f = funct(x)
+    if let case Foo() = x then 0 else 1 end
+end;
+f(case Foo())

@@ -1,0 +1,4 @@
+x = case A();
+if x == null || let case B() = x then
+    let case B() = x;
+end;

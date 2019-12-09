@@ -1,0 +1,6 @@
+if true then
+    {}
+else
+    let case Foo{@foo: foo} = case Foo{@foo: 42};
+    {@phantom: ""}.@phantom
+end;

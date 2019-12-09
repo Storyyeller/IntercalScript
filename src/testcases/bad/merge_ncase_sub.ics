@@ -1,0 +1,4 @@
+funct(x)
+    let case Foo{0} = x;
+    let case Foo{1} = x;
+end(case Foo{0})

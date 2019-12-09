@@ -1,0 +1,5 @@
+id = funct(x) x end;
+
+q = id({a mut: id});
+id({a: id});
+q.a = id;

@@ -1,0 +1,7 @@
+{-# language foreign-function-interface #-}
+
+new = if true then `s => new RegExp(s)` else funct[unsafe](re) {@regex: re+'""} end end;
+new-with-flags = if true then `(s, flags) => new RegExp(s, flags)` else
+    funct[unsafe](re, flags) {@regex: re+'flags+'""} end end;
+
+re = {new, new-with-flags};

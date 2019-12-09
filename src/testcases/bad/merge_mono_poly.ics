@@ -1,0 +1,9 @@
+{-# language rank1-types #-}
+f = $funct(x) x end;
+
+if true then
+    f = funct(x) x end;
+end;
+
+f(4) + 4;
+f("") +' "";

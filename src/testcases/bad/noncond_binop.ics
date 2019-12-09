@@ -1,0 +1,6 @@
+x = null;
+if x +' null then
+    0
+else
+    x.foo
+end;

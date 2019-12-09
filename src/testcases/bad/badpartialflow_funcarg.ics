@@ -1,0 +1,6 @@
+{-# language foreign-function-interface #-}
+id = funct(x) if x != null then x else `` end end;
+
+q = id(funct(x) x + 4 end);
+id(funct(x) x +' 4 end);
+q(1)

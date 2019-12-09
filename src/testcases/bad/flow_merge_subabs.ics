@@ -1,0 +1,9 @@
+id = funct(x) x end;
+
+f = funct(x) let case Bar() = x; end;
+g = funct(x) let case Foo() = x; end;
+
+funct(x)
+    f(id(x));
+    g(id(x));
+end(case Bar());

@@ -1,0 +1,6 @@
+{-# language foreign-function-interface #-}
+id = funct(x) x end;
+
+q = id(``);
+id(true);
+q +' 6

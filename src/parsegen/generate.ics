@@ -1,0 +1,8 @@
+{-# language foreign-function-interface #-}
+
+#import {writeFileSync} from `fs`
+
+#import {generate} from "grammar"
+
+data = generate();
+writeFileSync("src/generated2.ics", data);

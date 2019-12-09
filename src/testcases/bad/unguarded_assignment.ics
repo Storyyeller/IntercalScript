@@ -1,0 +1,4 @@
+{-# language rank1-types #-}
+q = $
+    a = funct(x) x end;
+

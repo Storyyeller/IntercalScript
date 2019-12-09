@@ -1,0 +1,8 @@
+id = funct(x) x end;
+
+weird = {x mut: true};
+weird.x && true;
+
+q = id({x mut: 0});
+id(weird);
+q.x = 1

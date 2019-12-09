@@ -1,0 +1,4 @@
+{-# language rank1-types #-}
+x = "g" +' "D";
+q =$
+    if x == null then x*2 end;

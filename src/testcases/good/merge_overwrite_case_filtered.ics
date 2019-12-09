@@ -1,0 +1,7 @@
+funct(x)
+    if let case Foo() = x then
+        0
+    else
+        let case Foo(a) = x;
+    end
+end(case Foo());

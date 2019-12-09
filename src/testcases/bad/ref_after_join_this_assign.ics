@@ -1,0 +1,7 @@
+if 5 != false then
+    x = 0
+else
+    1
+end;
+
+x

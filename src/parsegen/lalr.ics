@@ -1,0 +1,596 @@
+{-# language foreign-function-interface #-}
+
+#import {re} from "std:regex"
+#import {s} from "std:strings"
+
+#import {CodeGen} from "graph"
+#import {new-default-map} from "util"
+
+let Item future = funct(lhs, rhs, pos, rule-key) {
+    lhs, rhs, pos, rule-key,
+    key: "" +' pos +' " " +' rule-key,
+    tok: rhs.get(pos),
+
+    advance: funct()
+        Item(lhs, rhs, pos + 1, rule-key)
+    end,
+
+    isKernel: funct(start) pos > 0 || (lhs == start).0 end,
+
+    print: funct()
+        parts = [lhs, ":=", ...rhs.slice(0, pos), "%", ...rhs.slice(pos, rhs.length)];
+        s.trim(new-list(parts).join(" "))
+    end,
+} end;
+
+Rule = funct(lhs, rhs, code)
+    key = lhs +' " " +' rhs.join(" ");
+    {lhs, rhs, code, key, item: Item(lhs, rhs, 0, key)}
+end;
+
+LazySet = funct(deps) {
+    deps: new-list-mut(deps),
+    vals: new-set-mut(_),
+
+    solveSub: funct this(target, visited)
+        if !visited.has(this) then
+            visited.add(this);
+            do for val in this.vals then
+                target.add(val);
+            end;
+            do for dep in this.deps then
+                dep.solveSub(target, visited);
+            end;
+        end;
+    end,
+
+    solve: funct this()
+        if this.deps.length > 0 then
+            this.solveSub(this.vals, new-set-mut(_));
+            this.deps.clear();
+        end;
+        this.vals
+    end,
+} end;
+
+let ItemPair future = funct(item, follow) {
+    item, follow,
+    key: item.key,
+
+    wrap: funct()
+        set = LazySet([]);
+        set.deps.push(follow);
+        ItemPair(item, set)
+    end,
+} end;
+
+ItemSet = funct(num, key, kernel, items) {
+    num,
+    key,
+    kernel, (* list of items *)
+    items,  (* key => {item, follow-set} *)
+    edges: new-map-mut(_),  (* tok => (pairs, iset-key) *)
+
+    (* filled in by generateActionTable *)
+    actions: new-map-mut(_),
+    default-action mut: null,
+} end;
+
+Grammar = funct(precedence-lines)
+    precedence = new-map-mut(_);
+    do for let (i, line) in enumerate(precedence-lines) then
+        do for tok in s.split-ws(line) then
+            precedence.set(tok, i);
+        end;
+    end;
+
+{
+    rules: new-default-map(eml),
+    nonterms: new-set-mut(_),
+    aliases: new-map-mut(_),
+    precedence: new-map(precedence),
+
+    addAliases: funct this(tok, aliases)
+        do for alias in aliases then
+            this.aliases.set(alias, tok);
+        end;
+    end,
+
+    addRule: funct this(lhs, rhs, code)
+        rhs = new-list(filter(s.split-ws(rhs), funct(s) s != "" end));
+        this.rules.get(lhs).push(Rule(lhs, rhs, code));
+        this.nonterms.add(lhs);
+    end,
+
+    listRule: funct this(name)
+        name2 = name +' "_list";
+        this.addRule(name2, "", "eml()");
+        this.addRule(name2, name +' " " +' name2, "(p2.unshift(p1); p2).0");
+    end,
+
+    clistRule: funct this(name)
+        name2 = name +' "_list";
+        this.addRule(name2, "", "eml()");
+        this.addRule(name2, name, "new-list-mut([p1])");
+        this.addRule(name2, name +' " , " +' name2, "(p3.unshift(p1); p3).0");
+    end,
+
+    isTerm: funct this(tok) !this.nonterms.has(tok) end,
+    getAlias: funct this(tok)
+        v = this.aliases.get(tok);
+        if v != _ then v else tok end
+    end,
+
+    shiftPrecedence: funct this(tok)
+        score = this.precedence.get(tok);
+        if score == _ then _ else score << 1 end
+    end,
+
+    reducePrecedence: funct this(rhs)
+        score = undef;
+        do for part in rhs then
+            if this.isTerm(part) then
+                score = this.precedence.get(part);
+            end;
+        end;
+        if score == _ then _ else score << 1 | 1 end
+    end,
+
+    generateActionTable: funct this(iset, errors, start-rule)
+        action-lists = new-default-map(eml);
+        let {actions, items: item-pairs, edges} = iset;
+
+        (* shift aliases *)
+        shift-aliases = new-default-map(new-set-mut);
+        do for let {item} in item-pairs.values() then
+            tok = this.getAlias(item.tok);
+            if this.isTerm(tok) then
+                shift-aliases.get(tok).add(if tok == item.tok then null else item.tok end);
+            end;
+        end;
+
+        (* shift actions *)
+        do for tok in edges.keys() then
+            if this.isTerm(tok) then
+                aliases = new-list-mut([...shift-aliases.get(tok)]);
+                alias = aliases.get(0);
+                if alias == _ || (aliases.length > 1).0 then
+                    errors.push("Shift alias conflict " +' tok +' " " +' stringify(aliases));
+                else
+                    action-lists.get(tok).push((case Shift{alias}, this.shiftPrecedence(tok)));
+                end;
+            end;
+        end;
+
+        (* reduce actions *)
+        do for let {item, follow} in item-pairs.values() then
+            if item.tok == _ then
+                act-pair = (case Reduce{item}, this.reducePrecedence(item.rhs));
+                do for tok in follow.solve() then
+                    action-lists.get(tok).push(act-pair);
+                end;
+            end;
+        end;
+
+        (* Handle precedence and conflicts *)
+        counts = new-default-map(funct() {count mut: 0} end);
+        do for let (tok, act-pairs) in action-lists.m then
+            temp = act-pairs.pop();
+            if temp == _ then
+                errors.push("Internal error");
+            else
+                let (best-action, best-score) = temp;
+                do for let (action, score) in act-pairs then
+                    if score == _ || (best-score == _).0 || (score == best-score).0 then
+                        conflict-lines = new-list(["Conflict! " +' tok,
+                            "Old action: " +' stringify(best-action),
+                            "New action: " +' stringify(action),
+                            ...map(item-pairs.values(), funct(p) p.item.print() end)]);
+                        errors.push(conflict-lines.join(NL));
+                    else if score > best-score then
+                        best-action = action;
+                        best-score = score;
+                    end end;
+                end;
+
+                actions.set(tok, best-action);
+                if let case Reduce{item: {key, rule-key}} = best-action then
+                    if rule-key != start-rule.key then
+                        temp = counts.get(key);
+                        temp.count = temp.count + 1;
+                    end;
+                end;
+            end;
+        end;
+
+        (* Find the most common reduce action to generalize *)
+        best-key = null;
+        best-count = 0;
+        do for let (key, {count}) in counts.m then
+            if count > best-count then
+                best-key = key;
+                best-count = count;
+            end;
+        end;
+        (* Now actually generalize the action *)
+        gen-action = null;
+        do for let (tok, action) in actions then
+            if let case Reduce{item: {key}} = action then
+                if key == best-key then
+                    gen-action = action;
+                    actions.delete(tok);
+                end;
+            end;
+        end;
+        (* gen-action will be null if there were no reduces, but that's ok *)
+        iset.default-action = gen-action;
+    end,
+
+    generateCode: funct this(start)
+        errors = eml();
+        errors = {
+            push: funct(s)
+                do unsafe panic(s) end
+            end,
+        };
+
+        first-sets = new-map-mut(_);
+        let get-first future = funct(item)
+            res = first-sets.get(item.key);
+            if res == _ then
+                follow = LazySet([]);
+                res = {0 mut: false, 1: follow};
+                first-sets.set(item.key, res);
+
+                tok = this.getAlias(item.tok);
+                if tok == _ then
+                    res.0 = true;
+                else if this.isTerm(tok) then
+                    follow.vals.add(tok);
+                else
+                    empty = false;
+                    do for rule in this.rules.get(tok) then
+                        let (empty2, set2) = get-first(rule.item);
+                        empty = empty || empty2;
+                        follow.deps.push(set2);
+                    end;
+
+                    if empty then
+                        let (empty, set2) = get-first(item.advance());
+                        res.0 = empty;
+                        follow.deps.push(set2);
+                    end;
+                end end;
+            end;
+            res
+        end;
+
+        isets = new-map-mut(_);
+        let get-item-set future = funct(kernel)
+            kernel = sorted(kernel, funct(a, b)
+                if a.key <' b.key then -1 else if a.key >' b.key then 1 else 0 end end
+            end);
+
+            ikey = map(kernel, funct(pair) pair.key end).join(NL);
+            res = isets.get(ikey);
+            if res == _ then
+                kernel-items = map(kernel, funct(pair) pair.item end);
+                items = new-map-mut(_);
+
+                stack = new-list-mut(kernel);
+                do while temp = stack.pop(); temp != _ then
+                    let {item, follow} = temp;
+                    pair = items.get(item.key);
+                    if pair == _ then
+                        follow-wrapped = LazySet([follow]);
+                        items.set(item.key, ItemPair(item, follow-wrapped));
+
+                        if !this.isTerm(item.tok) then
+                            let (empty, first-set) = get-first(item.advance());
+
+                            do for rule in this.rules.get(item.tok) then
+                                stack.push(ItemPair(rule.item, first-set));
+                                if empty then
+                                    stack.push(ItemPair(rule.item, follow-wrapped));
+                                end;
+                            end;
+                        end;
+                    else
+                        pair.follow.deps.push(follow);
+                    end;
+                end;
+
+                iset = ItemSet(isets.size, ikey, kernel-items, items);
+                isets.set(ikey, iset);
+
+                (* now compute successor item sets *)
+                successors = new-default-map(eml);
+                do for pair in items.values() then
+                    tok = this.getAlias(pair.item.tok);
+                    if tok != _ then
+                        successors.get(tok).push(pair);
+                    end;
+                end;
+
+                do for let (tok, pairs) in successors.m then
+                    pairs2 = map(pairs, funct(pair) ItemPair(pair.item.advance(), pair.follow) end);
+                    iset2 = get-item-set(pairs2);
+                    do for let {item, follow} in pairs then
+                        item-pair2 = iset2.items.get(item.advance().key);
+                        (* Keep the type checker happy *)
+                        if item-pair2 != _ then
+                            item-pair2.follow.deps.push(follow);
+                        end;
+                    end;
+                    iset.edges.set(tok, (pairs, iset2.key));
+                end;
+                res = iset;
+            end;
+            res
+        end;
+
+        start-rules = this.rules.get(start);
+        start-rule = start-rules.get(0);
+        start-set = undef; (* keep typechecker happy *)
+
+        if start-rule == _ then
+            errors.push("Invalid start rule");
+        else
+            (* Manually mark start rule as followed by EOF *)
+            start-follow = LazySet([]);
+            start-follow.vals.add("EOF");
+
+            start-set = get-item-set([ItemPair(start-rule.item, start-follow)]);
+            print("Found", isets.size, "item sets");
+
+            (* Fill in action tables *)
+            do for iset in isets.values() then
+                this.generateActionTable(iset, errors, start-rule)
+            end;
+        end;
+
+        (* Now do the actual code generation *)
+        aliases = map(this.aliases,
+            funct(kv) new-list(["(", kv.0, ", ", kv.1, ")"]).join(s.QUOTE) end
+        ).join(", ");
+
+        lines = new-list-mut(["ALIASES = new-map([" +' aliases +' "]);", s.trim("
+parse = funct(tokens, fname)
+    tokens = new-list-mut(map(tokens, funct(tok)
+        let {type, val, span} = tok;
+        nt = ALIASES.get(type);
+        if nt != _ then
+            {type: nt, val, span}
+        else
+            tok
+        end
+    end));")]);
+
+        rule-ids = new-map-mut(_);
+        rules-list = eml();
+        do for rules in this.rules.m.values() then
+            do for rule in rules then
+                key = rule-ids.size;
+                rule-ids.set(rule.key, key);
+                rules-list.push(rule);
+                lines.push("(* rule " +' key +' " " +' rule.key +' " *)");
+            end;
+        end;
+        print("num rules", rules-list.length);
+
+        get-rule-id = funct(key)
+            rid = rule-ids.get(key);
+            if rid == _ then
+                errors.push("Internal error"); ""
+            else
+                rid
+            end;
+        end;
+
+        item-id = funct(item) "" +' get-rule-id(item.rule-key) +' "-" +' item.pos end;
+
+        gen = CodeGen();
+        (* split out rule code into separate functions *)
+        do for rule in rules-list then
+            name = "rule" +' get-rule-id(rule.key);
+            args = map(range(rule.item.rhs.length), funct(i) "p"+'(i+1).0 end);
+            args = new-list([...args, "span"]).join(", ");
+
+            gen.def(name).code("funct(" +' args +' ") " +' rule.code +' " end");
+        end;
+
+        (* more helper functions *)
+        gen.def("UnexpectedTokenError").code(R"-(funct(tok, debug)
+  case Err(tok.span.print("SyntaxError: Unexpected token " +' tok.type) +' NL +' "    " +' debug)
+end)-");
+        gen.def("UnexpectedEOFError").code(R"-(funct(debug)
+  case Err("SyntaxError: Unexpected end of file when parsing " +' fname +' NL +' "    " +' debug)
+end)-");
+        gen.def("get-token").code("funct() tokens.last() end");
+
+        thunked-states = new-set-mut(_);
+        do for iset in isets.values() then
+            name = "state" +' iset.num;
+            def = gen.def(name);
+            debug = map(iset.items.values(), funct(p) p.item.print() end).join(NL);
+            debug = s.QUOTE +' name +' ":" +' NL +' debug +' s.QUOTE;
+
+
+            (* state function body *)
+            def.code("funct(cbs)");
+            def.code("  tok = get-token();");
+            def.dep("get-token");
+
+            def.code("  debug = " +' debug +' ";");
+            def.code("  if tok == undef then");
+            def.code("    UnexpectedEOFError(debug)");
+            def.dep("UnexpectedEOFError");
+
+            write-reduce = funct(action)
+                let case Reduce{item} = action;
+                if item.pos == 0 then
+                    name = "" +' iset.num +' "-" +' item-id(item);
+                    def.code("    span = tok.span.start();");
+                    def.code("    " +' name +' "(cbs, span, span)");
+                    def.dep(name);
+                else
+                    def.code("    cbs." +' item-id(item) +' "(tok.span.start())");
+                end;
+            end;
+
+            do for let (tok, action) in iset.actions then
+                tok-str = s.QUOTE +' tok +' s.QUOTE;
+
+                if let case Shift{alias} = action then
+                    if alias != null then
+                        alias-str = s.QUOTE +' s.toLowerCase(alias) +' s.QUOTE;
+                        def.code(
+                            "  else if tok.type == " +' tok-str +' " && (tok.val == " +' alias-str +' ").0 then"
+                        );
+                    else
+                        def.code("  else if tok.type == " +' tok-str +' " then");
+                    end;
+
+                    (* inline the goto function *)
+                    temp = iset.edges.get(tok);
+                    if temp == _ then
+                        errors.push("Internal error");
+                    else
+                        let (pairs, iset-key2) = temp;
+                        iset2 = isets.get(iset-key2);
+                        if iset2 == _ then
+                            errors.push("Internal error");
+                        else
+                            name = "state" +' iset2.num;
+                            name2 = "new-cbs-" +' iset.num +' "-" +' iset2.num;
+
+                            def.code("    tokens.pop();");
+                            def.code("    " +' name +' "(" +' name2 +' "(cbs, tok, tok.span))");
+                            def.dep(name);
+                            def.dep(name2);
+                        end;
+                    end;
+                else let case Reduce{item} = action;
+                    def.code("  else if tok.type == " +' tok-str +' " then");
+                    write-reduce(action);
+                    print("Nongeneralized reduce!", iset.num, tok);
+                end;
+            end;
+            let {default-action} = iset;
+            if default-action != null then
+                def.code("  else");
+                write-reduce(default-action);
+            else
+                def.code("  else UnexpectedTokenError(tok, debug)");
+                def.dep("UnexpectedTokenError");
+            end;
+            def.code("  " +' s.repeat("end ", iset.actions.size) +' "end");
+            def.code("end");
+
+
+            (* k functions *)
+            do for let {item} in iset.items.values() then
+                args = map(range2(item.pos, item.rhs.length), funct(i) "p"+'(i+1).0+'", " end).join("");
+                kdef = gen.def("" +' iset.num +' "-" +' item-id(item));
+
+                if item.isKernel(start) then
+                    kdef.code("funct(cbs, " +' args +' "end-) cbs." +'
+                        item-id(item) +' "(" +' args +' "end-) end");
+                else
+                    kdef.code("funct(cbs, " +' args +' "start, end-)");
+                    kdef.code("  span = start.merge(end-);");
+
+                    rule-args = map(range(item.rhs.length), funct(i) "p"+'(i+1).0+'", " end).join("");
+                    rule-name = "rule" +' get-rule-id(item.rule-key);
+                    kdef.code("  val = " +' rule-name +' "(" +' rule-args +' "span);");
+                    kdef.dep(rule-name);
+
+                    iset2-num = -1;
+                    temp = iset.edges.get(item.lhs);
+                    if temp == _ then
+                        errors.push("Internal error");
+                    else
+                        let (pairs, iset-key2) = temp;
+                        iset2 = isets.get(iset-key2);
+                        if iset2 == _ then
+                            errors.push("Internal error");
+                        else
+                            iset2-num = iset2.num;
+                        end;
+                    end;
+
+                    name2 = "new-cbs-" +' iset.num +' "-" +' iset2-num;
+                    kdef.code("  case Thunk(case State" +' iset2-num +' "(" +' name2 +' "(cbs, val, start)))");
+                    kdef.dep(name2);
+                    thunked-states.add(iset2-num);
+
+                    kdef.code("end");
+                end;
+            end;
+
+
+            (* new-cbs functions *)
+            do for let (term, (pairs, iset-key2)) in iset.edges then
+                iset2 = isets.get(iset-key2);
+                if iset2 == _ then
+                    errors.push("Internal error");
+                    name2 = "invalid";
+                else
+                    name2 = "new-cbs-" +' iset.num +' "-" +' iset2.num;
+                end;
+
+                def2 = gen.def(name2);
+                def2.code("funct(cbs, val, start) {");
+                do for let {item} in pairs then
+                    item2 = item.advance();
+                    kname = "" +' iset.num +' "-" +' item-id(item);
+                    args = map(range2(item2.pos, item2.rhs.length), funct(i) "p"+'i+'", " end).join("");
+                    start-arg = if item.pos == 0 then "start, " else "" end;
+
+                    def2.code("  " +' item-id(item2) +' ": funct(" +' args +' "end-) " +'
+                        kname +' "(cbs, val, " +' args +' start-arg +' "end-) end,");
+                    def2.dep(kname);
+                end;
+                def2.code("} end");
+            end;
+        end;
+
+        (* thunk function *)
+        tdef = gen.def("thunk");
+        tdef.code("funct(val)");
+        tdef.code("  do while let case Thunk(inner) = val then");
+
+        nums = sorted(thunked-states, funct(a, b) a - b end);
+        do for n in nums then
+            match = "let case State" +' n +' "(cbs) = inner";
+
+            if n == nums.get(nums.length - 1) then
+                tdef.code("    else " +' match +' ";");
+            else if n == nums.get(0) then
+                tdef.code("    if " +' match +' " then");
+            else
+                tdef.code("    else if " +' match +' " then");
+            end end;
+            tdef.code("      val = state" +' n +' "(cbs)");
+            tdef.dep("state" +' n);
+        end;
+        tdef.code("    " +' s.repeat("end ", nums.length - 2) +' "end;");
+        tdef.code("  end;");
+        tdef.code("  val");
+        tdef.code("end");
+
+
+        if start-set != _ && (start-rule != _).0 then
+            name = "state" +' start-set.num;
+            srk = get-rule-id(start-rule.key);
+            gen.write(funct(line) lines.push(line) end, [name, "thunk"]);
+
+            lines.push("thunk(" +' name +' "({");
+            lines.push("  " +' srk +' "-0: funct(mod, end-) case Ok(mod) end,");
+            lines.push("}))");
+            lines.push("end;");
+        end;
+
+        lines.join(NL)
+    end,
+} end;

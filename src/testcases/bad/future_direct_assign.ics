@@ -1,0 +1,6 @@
+let x future =
+    (y = x;
+    {h: funct(s) s*2 end}).0;
+
+y.h(74);
+

@@ -1,0 +1,6 @@
+a = 4;
+
+do while false then
+    funct() a end;
+end;
+a = "";

@@ -1,0 +1,7 @@
+id = funct(x) x end;
+
+funct(x)
+    y = id(x);
+    y.a.0;
+    y.a.1;
+end({a: {0}});

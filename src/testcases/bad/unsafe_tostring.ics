@@ -1,0 +1,1 @@
+print(parse-int({toString: funct[unsafe]() transmute(null).foo end}));

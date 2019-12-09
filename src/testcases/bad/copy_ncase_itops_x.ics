@@ -1,0 +1,3 @@
+{-# language rank1-types #-}
+f = $funct(x) let case 0() = $x end;
+f(case 1());

@@ -1,0 +1,9 @@
+id = funct(x) x end;
+
+f = funct(x) x.0 end;
+g = funct(x) x.1 end;
+
+funct(x)
+    f(id(x));
+    g(id(x));
+end((id));

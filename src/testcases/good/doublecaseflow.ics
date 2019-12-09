@@ -1,0 +1,6 @@
+funct(y)
+    funct(x)
+        let case Foo() = x;
+        x
+    end(y)
+end(case Foo())

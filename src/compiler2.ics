@@ -1,0 +1,184 @@
+{-# language foreign-function-interface #-}
+
+#import {basename, dirname, relative, resolve} from `path`
+
+#import {s} from "std:strings"
+
+#import {compile, USE-MODULES} from "codegen2"
+#import {read, write} from "file-utils"
+#import {parse} from "parse"
+#import {getType} from "typeck6"
+
+let {log, error} = `console`;
+
+OUT-EXTENSION = if USE-MODULES then ".mjs" else ".js" end;
+FatalErrorReporter = funct(parent) {
+    parent,
+    errors: new-set-mut(_),
+    warnings: new-set-mut(_),
+    failed mut: false,
+
+    onError: funct this (s)
+        this.failed = true;
+        let {parent} = this;
+        if parent != null then
+            parent.onError(s);
+        else if !this.errors.has(s) then
+            this.errors.add(s);
+            error(s);
+        end end;
+    end,
+
+    internalError: funct this()
+        (*trace();
+        do unsafe panic("Internal compiler error") end;*)
+        this.onError("Internal compiler error")
+    end,
+
+    onWarning: funct this (s)
+        let {parent} = this;
+        if parent != null then
+            parent.onWarning(s);
+        else if !this.warnings.has(s) then
+            this.warnings.add(s);
+            log(s);
+        end end;
+    end,
+} end;
+
+ModuleSrcPath = funct(compiler, path) {
+    compiler, path,
+
+    resolve: funct this(relative, expl)
+        this.compiler.resolve(this.path, relative, expl)
+    end,
+} end;
+
+ModuleData = funct(src-path, out-path, types3, exported-ids, ast) {
+    src-path, out-path, types3, exported-ids, ast,
+} end;
+
+Compiler = funct(out-root, src-root, std-root) {
+    modules: new-map-mut(_), (* src-path -> ModuleData *)
+    prelude mut: null,
+    pending_modules: new-set-mut(_),
+    reporter mut: FatalErrorReporter(null),
+    out-paths: new-map-mut(_),
+    src-root,
+    std-root,
+    out-root,
+
+    relative: funct this (p1, p2) relative(p1, p2) end,
+
+    getOutPath: funct this (src-path)
+        if s.endsWith(src-path, ".ics") then
+            src-path = s.slice(src-path, 0, -4);
+        end;
+
+        rel-dir = relative(this.src-root, dirname(src-path));
+        fname = basename(src-path);
+
+        rel-dir = s.replace(rel-dir, "../", "");
+        rel-dir = s.replace(rel-dir, "..", "");
+        fname = s.replace(fname, "-", "_");
+
+        temp-base = resolve(this.out-root, rel-dir, fname);
+        count = this.out-paths.get(temp-base);
+        if count != _ then
+            temp = temp-base +' "-" +' count;
+            this.out-paths.set(temp-base, count + 1);
+        else
+            temp = temp-base;
+            this.out-paths.set(temp-base, 2);
+        end;
+
+        temp +' OUT-EXTENSION
+    end,
+
+    _compile: funct this (src-path, expl, include-shebang)
+        base-reporter = this.reporter;
+        reporter = FatalErrorReporter(base-reporter);
+        this.reporter = reporter;
+        mod-data = null;
+
+        if expl != null && this.pending_modules.has(src-path) then
+            reporter.onError(expl.print("ImportError: Circular module dependency"));
+        else
+            this.pending_modules.add(src-path);
+
+            out-path = this.getOutPath(src-path);
+            display-name = relative(this.src-root, src-path);
+
+            res = read(src-path, expl);
+            if let case Err(message) = res then
+                reporter.onError(message);
+                (* Dummy value to continue *)
+                source = "()";
+            else
+                let case Ok(source) = res;
+            end;
+
+            if res = parse(display-name, source); let case Err(error) = res then
+                reporter.onError(error)
+            else let case Ok(ast) = res;
+                mod-src-path = ModuleSrcPath(this, src-path);
+                types3 = getType(this, mod-src-path, ast, reporter, this.prelude);
+                exported-ids = [...types3.exports.keys()];
+
+                if reporter.failed then
+                    mod-data = null;
+                else
+                    mod-data = ModuleData(mod-src-path, out-path, types3, exported-ids, ast);
+                    compiled = compile(this, mod-data, ast);
+
+                    if include-shebang then
+                        compiled = R"(#!/bin/sh
+":" //# http://sambal.org/?p=1014 ; exec  /usr/bin/env node --experimental-modules --no-warnings "$0" "$@"
+)" +' compiled;
+                    end;
+
+                    res = write(out-path, compiled, include-shebang, expl);
+                    if let case Err(message) = res then
+                        reporter.onError(message);
+                    else
+                        print("module written to", out-path);
+                    end;
+                end;
+            end;
+            this.pending_modules.delete(src-path);
+        end;
+        this.reporter = base-reporter;
+
+        this.modules.set(src-path, mod-data);
+        mod-data
+    end,
+
+    compilePrelude: funct this(src-path)
+        this.prelude = this._compile(src-path, null, false);
+    end,
+
+    compile: funct this(src-path, expl, include-shebang)
+        this._compile(src-path, expl, include-shebang)
+    end,
+
+    resolve: funct this (base, relpath, expl)
+        (*print("resolving", base, relpath);*)
+        base+'"";
+
+        if s.startsWith(relpath, "std:") then
+            relpath = s.sliceE(relpath, 4);
+            base-dir = this.std-root;
+        else
+            base-dir = dirname(base);
+        end;
+
+        rp = resolve(base-dir, relpath +' ".ics");
+
+        old = this.modules.get(rp);
+        if old != _ then
+            old
+        else
+            this.compile(rp, expl, false)
+        end
+    end,
+} end;

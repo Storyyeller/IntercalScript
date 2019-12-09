@@ -1,0 +1,5 @@
+id = funct(x) x end;
+
+q = id(funct() 4 end);
+id(funct() null end);
+q() + 0

@@ -1,0 +1,9 @@
+x = 5;
+
+if true then
+    _
+else
+    funct() x end;
+end;
+
+x = "Hello";

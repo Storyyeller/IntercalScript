@@ -1,0 +1,9 @@
+id = funct(x) x end;
+
+f = funct(x) x.a = 0 end;
+g = funct(x) x.b = 0 end;
+
+funct(x)
+    f(id(x));
+    g(id(x));
+end({a mut: 0});

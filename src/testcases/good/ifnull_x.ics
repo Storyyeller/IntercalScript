@@ -1,0 +1,6 @@
+{-# language rank1-types #-}
+check = $funct(x)
+    if x == null then "H" else x end
+end;
+
+check(null) +' "ello"

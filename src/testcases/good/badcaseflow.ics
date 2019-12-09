@@ -1,0 +1,3 @@
+
+f = funct(x) let case Foo() = x; end;
+f(case Foo())

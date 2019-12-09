@@ -1,0 +1,58 @@
+{-# language foreign-function-interface #-}
+
+len = `s => s.length`;
+
+indexOf = `(s, p1) => s.indexOf(p1)`;
+lastIndexOf = `(s, p1) => s.lastIndexOf(p1)`;
+
+slice = `(s, p1, p2) => s.slice(p1, p2)`;
+sliceE = `(s, p1) => s.slice(p1)`;
+split = `(s, p1) => s.split(p1)`;
+split-ws = `s => s.split(/\s+/)`;
+trim = `s => s.trim()`;
+startsWith = `(s, p1) => s.startsWith(p1)`;
+endsWith = `(s, p1) => s.endsWith(p1)`;
+toLowerCase = `(s) => s.toLowerCase()`;
+toUpperCase = `(s) => s.toUpperCase()`;
+repeat = `(s, n) => s.repeat(n)`;
+includes = `(s, s2) => s.includes(s2)`;
+
+match = `(s, r) => s.match(r)`;
+replace = `(s, old, new_) => s.split(old).join(new_)`;
+
+QUOTE = R"(")";
+
+fromCodePoint = funct(c)
+    c = c & 2097151 (* 0x1fffff *);
+    c = c % 1114112 (* 0x110000 *);
+    if true then `String.fromCodePoint(c)` else "" end
+end;
+
+sort = if true then `strs => strs.sort()` else funct(strs)
+    do for s in strs then s+'"" end;
+    strs
+end end;
+
+if true then _ else
+    len = funct(s) s+'""; 0 end;
+    indexOf = funct(s, s2) s+'s2+'""; 0 end;
+    lastIndexOf = funct(s, s2) s+'s2+'""; 0 end;
+
+    slice = funct(s, n, n2) n+n2; s+'"" end;
+    sliceE = funct(s, n) n+0; s+'"" end;
+    split = funct(s, s2) s+'s2+'""; [""] end;
+    split-ws = funct(s) s+'""; [""] end;
+    trim = funct(s) s+'"" end;
+
+    startsWith = funct(s, s2) s+'s2+'""; false end;
+    endsWith = funct(s, s2) s+'s2+'""; false end;
+    toLowerCase = funct(s) s+'"" end;
+    toUpperCase = funct(s) s+'"" end;
+    repeat = funct(s, n) n+0; s+'"" end;
+    includes = funct(s, s2) s+'s2+'""; false end;
+
+    match = funct(s, r) s+'""; r.@regex; if true then ("") else null end end;
+    replace = funct(s, s2, s3) s+'s2+'s3+'"" end;
+end;
+
+s = {len, indexOf, lastIndexOf, slice, sliceE, split, split-ws, trim, startsWith, endsWith, toLowerCase, toUpperCase, repeat, includes, match, replace, QUOTE, fromCodePoint, sort};

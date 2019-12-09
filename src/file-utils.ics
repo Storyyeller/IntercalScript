@@ -1,0 +1,44 @@
+{-# language foreign-function-interface #-}
+
+#import {existsSync, mkdirSync, writeFileSync, readFileSync} from `fs`
+#import {dirname} from `path`
+
+read = funct(fname, expl)
+    do unsafe
+        let (text, err) = try(funct() readFileSync(fname, {encoding: "utf8"}) end);
+    end;
+    if err == null then
+        case Ok(text)
+    else
+        let {message} = err;
+        message = "Error: Something went wrong while attempting to read a file:" +' NL +' message;
+        if expl != null then
+            message = expl.print(message);
+        end;
+        case Err(message)
+    end
+end;
+
+write = funct(out-path, data, is-executable, expl)
+    mode = if is-executable then 493 else 420 end;
+
+    do unsafe
+        let (val, err) = try(funct()
+            folder = dirname(out-path);
+            if !existsSync(folder) then
+                mkdirSync(folder, {recursive: true});
+            end;
+            writeFileSync(out-path, data, {mode});
+        end);
+    end;
+    if err == null then
+        case Ok()
+    else
+        let {message} = err;
+        message = "Error: Something went wrong while attempting to read a file:" +' NL +' message;
+        if expl != null then
+            message = expl.print(message);
+        end;
+        case Err(message)
+    end
+end;

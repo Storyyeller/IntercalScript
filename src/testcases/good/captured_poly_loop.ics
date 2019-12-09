@@ -1,0 +1,8 @@
+{-# language rank1-types #-}
+f = $funct(x) x end;
+funct() f end;
+
+do while true then
+    f(3) + 3;
+    f("") +' "";
+end;

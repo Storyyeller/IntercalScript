@@ -1,0 +1,6 @@
+{-# language rank1-types #-}
+let f = $funct(x)
+    g = funct() x end;
+    g() + 4;
+end;
+f("");

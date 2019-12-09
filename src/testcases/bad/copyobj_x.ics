@@ -1,0 +1,5 @@
+{-# language rank1-types #-}
+funct()
+    x = ${0, a mut: 1};
+    x.a = x.0;
+end;

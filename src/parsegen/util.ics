@@ -1,0 +1,15 @@
+{-# language rank1-types #-}
+
+new-default-map = $funct(f) {
+    m: new-map-mut(_),
+    f,
+
+    get: funct this(key)
+        val = this.m.get(key);
+        if val == _ then
+            val = this.f(_);
+            this.m.set(key, val);
+        end;
+        val
+    end,
+} end;

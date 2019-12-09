@@ -1,0 +1,18 @@
+x = if true then case Left(3) else case Right(3) end;
+
+do while let case Left() = x then
+    let case Left(y) = x;
+    y + 3;
+end;
+let case Right() = x;
+
+z = if true then case Left("") else case Right(3) end;
+if let case Left() = z then
+    let case Left(y) = z;
+    y +' 3;
+else
+    let case Right() = z;
+end;
+
+if let f future = () then _ end;
+

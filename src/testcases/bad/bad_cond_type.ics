@@ -1,0 +1,4 @@
+x = null;
+if x != true then
+    x.foo;
+end

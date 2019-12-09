@@ -1,0 +1,5 @@
+foo = 5;
+
+do for n in [{foo}] then
+    n.foo + 2
+end;

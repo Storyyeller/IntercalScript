@@ -1,0 +1,4 @@
+{-# language rank1-types #-}
+q = $
+    do while false then _ end;
+

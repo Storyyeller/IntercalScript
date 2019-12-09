@@ -1,0 +1,80 @@
+LIVE = 0;
+CANDIDATE_ROOT = 1;
+SCANNED = 2;
+DEAD = 3;
+FREED = 4;
+NAMES = new-list(["LIVE", "ROOT", "SCANNED", "DEAD", "FREED"]);
+
+GarbageCollector = funct() {
+    push: funct this (node) 0 end,
+    collect: funct this () 0 end,
+} end;
+
+liveset = new-set-mut(_);
+_ID = -1;
+
+_counters = {id mut: 0, freed mut: 0};
+new-id = funct()
+    let {id} = _counters;
+    _counters.id = id + 1;
+    id
+end;
+
+GCable = {prototype: {
+    (* functions which will be copied into base class *)
+    _init: funct this ()
+        liveset.add(this);
+        if this._id == _ID then
+            print("create node", this._id); trace();
+        end;
+    end,
+
+    alive: funct this () this._color != FREED end,
+
+    ref: funct this ()
+        if this._id == _ID then
+            print("ref", this._id, this._ref, NAMES.get(this._color)); trace();
+        end;
+
+        (* assert2(this.alive(), "referencing dead " +' this._id); *)
+        this._ref = this._ref + 1;
+        this._color = LIVE;
+        this
+    end,
+
+    _gc_free: funct this ()
+        (* assert(this._ref == 0); *)
+        this._color = FREED;
+        _counters.freed = _counters.freed + 1;
+        liveset.delete(this);
+    end,
+
+    new_count: funct this () _counters.id end,
+    freed_count: funct this () _counters.freed end,
+    get_live: funct this () new-list(liveset) end,
+
+    _dropShallow: funct this (droplist, gc)
+        if this._id == _ID then
+            print("dropS", this._id, this._ref, NAMES.get(this._color)); trace();
+        end;
+
+        (* assert2(this.alive() && (this._ref > 0).0, "dropping dead " +' this._id); *)
+        this._ref = this._ref - 1;
+
+        if this._ref == 0 then
+            droplist.extend(this._getChildren());
+            this._free();
+        else
+            this._color = CANDIDATE_ROOT;
+            gc.push(this);
+        end;
+    end,
+
+    drop: funct this (gc)
+        droplist = new-list-mut([this]);
+        do while node = droplist.pop(); node != _ then
+            node._dropShallow(droplist, gc);
+        end;
+    end,
+}};
+

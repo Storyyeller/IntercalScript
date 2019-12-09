@@ -1,0 +1,173 @@
+#import {s} from "std:strings"
+
+#import {Grammar} from "lalr"
+
+generate-parse = funct()
+    idwords = s.split-ws(s.toUpperCase("while for in then else end future mut import unsafe from language"));
+    binop-literals = s.split-ws("-");
+    binop-toks = new-list(["BINOP", ...binop-literals]);
+
+    grammar = Grammar([
+        "=",
+        ":", (*type ascription*)
+        binop-toks.join(" "),
+        "!",
+        "(", (*call*)
+        ".",
+        ]);
+    grammar.addAliases("ID", s.split-ws("MUT IN THEN ELSE FROM IMPORT LANGUAGE UNSAFE FUTURE"));
+    grammar.addAliases("BINOP", binop-literals);
+
+    grammar.addRule("expr", "exprns", "p1");
+    grammar.clistRule("expr");
+
+    grammar.addRule("id", "ID", "p1.val");
+    do for word in idwords then
+        if grammar.getAlias(word) != "ID" then
+            grammar.addRule("id", word, "p1.val");
+        end;
+    end;
+
+    grammar.addRule("exprns", "id", "case Varb{name: p1, span}");
+
+    grammar.addRule("string", "STRING", "p1.val");
+    grammar.addRule("exprns", "string", "case String{val: p1, span}");
+
+    grammar.addRule("exprns", "exprns BINOP exprns", "case Binop{lhs: p1, op: p2.val, rhs: p3, span}");
+    do for op in binop-literals then
+        if grammar.getAlias(op) != "BINOP" then
+            grammar.addRule("exprns", "exprns ${op} exprns", "case Binop{lhs: p1, op: p2.val, rhs: p3, span}");
+        end;
+    end;
+
+
+    grammar.addRule("exprns", "! exprns", "case Not{expr: p2, span}");
+    grammar.addRule("exprns", "DO UNSAFE expr END", "case Unsafe{expr: p3}");
+
+
+    grammar.addRule("expr", "expr ; exprns", "case Semi{lhs: p1, rhs: p3, span}");
+
+    (*destructuring*)
+    grammar.addRule("phantom_id", "id", "p1");
+    grammar.addRule("phantom_id", "PHANTOM_ID", "p1.val");
+    grammar.addRule("varpat", "id", "case VarPat{name: p1, span}");
+    grammar.addRule("objpat", "( pattern_list )",
+        R"(case ObjPat{pairs:
+            map(enumerate(p2), funct(args) let (i, pattern) = args; {key: ""+'i, pattern, span} end),
+            span})");
+    grammar.addRule("keypat", "phantom_id : pattern", "{key:p1, pattern:p3, span}");
+    grammar.addRule("keypat", "id", "{key: p1, pattern: case VarPat{name: p1, span}, span}");
+    grammar.clistRule("keypat");
+    grammar.addRule("objpat", "{ keypat_list }", "case ObjPat{pairs: p2, span}");
+    grammar.addRule("pattern", "CASE id objpat", "case CasePat{tag: p2, obj: p3, span}");
+
+    grammar.addRule("pattern", "varpat", "p1");
+    grammar.addRule("pattern", "objpat", "p1");
+    grammar.clistRule("pattern");
+
+    grammar.addRule("letpat", "varpat", "p1");
+    grammar.addRule("letpat", "LET pattern", "p2");
+
+    grammar.addRule("poly_opt", "POLY", "(len(p1.val), span)");
+    grammar.addRule("poly_opt", "", "(0, null)");
+
+    grammar.addRule("exprns", "letpat = poly_opt exprns", "case Assign{lhs: p1, poly: p3.0, poly-span: p3.1, rhs: p4, span}");
+
+
+    grammar.addRule("exprns", "LET varpat FUTURE = exprns", "case Future{lhs: p2, rhs: p5, span}");
+    grammar.addRule("exprns", "exprns . phantom_id = exprns", "case SetField{lhs: p1, name: p3, rhs: p5, span}");
+
+
+
+    grammar.addRule("field_sub", ". phantom_id", "{name: p2, span}");
+    grammar.addRule("exprns", "exprns field_sub",
+        "case Field{expr: p1, name: p2.name, field-span: p2.span, span}");
+
+    grammar.addRule("exprns", "exprns ( expr_list )",
+        "case Call{expr: p1, params: p3, span}");
+
+    (*object literals*)
+    grammar.addRule("objlit", "( expr_list )",
+        R"(case Obj{pairs:
+            map(enumerate(p2), funct(args) let (i, expr) = args; {key: ""+'i, mutable: false, expr, span} end),
+            span})");
+
+    grammar.addRule("mut_opt", "MUT", "true");
+    grammar.addRule("mut_opt", "", "false");
+    grammar.addRule("keyval", "phantom_id mut_opt : expr", "{key:p1, mutable: p2, expr:p4, span}");
+    grammar.addRule("keyval", "id", "{key: p1, mutable: false, expr: case Varb{name: p1, span}, span}");
+    grammar.clistRule("keyval");
+    grammar.addRule("objlit", "{ keyval_list }", "case Obj{pairs: p2, span}");
+
+    grammar.addRule("exprns", "objlit", "p1");
+    grammar.addRule("exprns", "CASE id objlit", "case Case{tag: p2, obj: p3, span}");
+
+    (*array literals*)
+    grammar.addRule("spread_opt", "", "false");
+    grammar.addRule("spread_opt", ". . .", "true");
+    grammar.addRule("restexpr", "spread_opt expr", "(p1, p2, span)");
+    grammar.clistRule("restexpr");
+    grammar.addRule("exprns", "[ restexpr_list ]", "case List{vals: p2, span}");
+
+
+    grammar.addRule("exprns", "JS", "case JS{code: slice(p1.val, 1, -1), span}");
+
+    grammar.addRule("elseb_opt", "ELSE expr", "p2");
+    grammar.addRule("elseb_opt", "", "null");
+    grammar.addRule("exprns", "IF expr THEN expr elseb_opt END",
+        "case If{cond: p2, thenb: p4, elseb: p5, span}");
+
+    grammar.addRule("exprns", "DO WHILE expr THEN expr END",
+        "case While{cond: p3, body: p5, span}");
+
+    grammar.addRule("exprns", "DO FOR letpat IN expr THEN expr END",
+        "case For{lhs: p3, range: p5, body: p7, span}");
+
+
+    (*function definitions*)
+    grammar.addRule("param", "id", "{name:p1, span}");
+    grammar.clistRule("param");
+
+    grammar.addRule("unsafe_opt", "", "null");
+    grammar.addRule("unsafe_opt", "[ UNSAFE ]", "span");
+    grammar.addRule("thisp_opt", "", "null");
+    grammar.addRule("thisp_opt", "param", "p1");
+    grammar.addRule("exprns", "FUNCT unsafe_opt thisp_opt ( param_list ) expr END",
+        "case Funct{unsafe: p2, thisp: p3, params: p5, expr: p7, span}");
+
+    grammar.addRule("importitem", "id : id", "{key:p1, name: p3, span}");
+    grammar.addRule("importitem", "id", "{key: p1, name: p1, span}");
+    grammar.clistRule("importitem");
+    grammar.addRule("importpat", "{ importitem_list }", "p2");
+    grammar.addRule("importrhs", "string", "(false, p1)");
+    grammar.addRule("importrhs", "JS", "(true, slice(p1.val, 1, -1))");
+
+    grammar.addRule("pragma", "{- # LANGUAGE id # -}", "p4");
+    grammar.listRule("pragma");
+
+    grammar.addRule("import", "# IMPORT importpat FROM importrhs",
+        "{lhs: p3, extern: p5.0, path: p5.1, span}");
+    grammar.listRule("import");
+
+    (*Hack to work around fact that our parser never reduces the final rule*)
+    grammar.addRule("hack", "pragma_list import_list expr", "case Mod{thisp: null, pragmas: p1, imports: p2, expr: p3, span}");
+    grammar.addRule("module", "hack", R"(`console`.assert(0, "unreachable rule"))");
+    grammar.generateCode("module")
+end;
+
+generate = funct()
+    source = generate-parse();
+
+    trimmed-len = 0;
+    do for line in s.split(source, NL) then
+        trimmed-len = trimmed-len + s.len(s.trim(line));
+    end;
+    num-funcs = s.split(source, "funct(").length - 1;
+    num-thunks = s.split(source, "let case S").length - 1;
+    print("generated stats", s.len(source), trimmed-len, num-funcs, num-thunks);
+
+    R"(#import {slice, len} from "std:strings"
+#import {wordset} from "tokenize"
+#import {StringFormat} from "esnames2"
+)" +' source
+end;

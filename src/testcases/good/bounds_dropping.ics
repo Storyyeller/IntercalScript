@@ -1,0 +1,10 @@
+{-# language rank1-types #-}
+w = $funct(x, y)
+    if !x then _ end;
+    x && x;
+    x || x;
+    y *. y;
+    [x, y];
+
+    (* todo: future, loops *)
+end;

@@ -1,0 +1,187 @@
+
+Node = funct(val) {
+    val,
+    deps: new-set-mut(_),
+    rdeps: new-set-mut(_),
+
+    add: funct this(other)
+        this.deps.add(other);
+        other.rdeps.add(this);
+    end,
+
+    remove: funct this(other)
+        this.deps.delete(other);
+        other.rdeps.delete(this);
+    end,
+
+    clearRDeps: funct this()
+        do for n2 in this.rdeps then
+            n2.deps.delete(this);
+        end;
+        this.rdeps.clear();
+    end,
+
+    debug: funct this()
+        this.val.name +' " -> " +' map(this.deps, funct(n) n.val.name end).join(", ")
+    end,
+} end;
+
+tarjan = funct(nodes)
+    get = funct(map, k) v = map.get(k); if v != _ then v else 0 end end;
+
+    sccs = eml();
+    counter = 0;
+    index = new-map-mut(_);
+    lowlink = new-map-mut(_);
+    removed = new-set-mut(_);
+    subtree = eml();
+
+    stack = new-list-mut(map(nodes, funct(n) (n, false) end));
+    do while temp = stack.pop(); temp != _ then
+        let (n, state) = temp;
+        if !state then
+            (* before recursing *)
+            if !index.has(n) then
+                id = counter;
+                counter = id + 1;
+                index.set(n, id);
+                lowlink.set(n, id);
+
+                subtree.push(n);
+                stack.push((n, true));
+                do for n2 in n.deps then
+                    if !removed.has(n2) then
+                        stack.push((n2, false));
+                    end;
+                end;
+            end;
+        else
+            (* after recursing *)
+            i = get(index, n);
+            ll = get(lowlink, n);
+
+            do for n2 in n.deps then
+                if !removed.has(n2) then
+                    i2 = get(index, n2);
+                    ll2 = get(lowlink, n2);
+
+                    if i2 <= i then
+                        ll = min(ll, i2);
+                    else
+                        ll = min(ll, ll2);
+                    end;
+                    lowlink.set(n, ll);
+                end;
+            end;
+
+            if ll == i then
+                scc = eml();
+                last = _;
+                do while last != n then
+                    last = subtree.pop();
+
+                    (* Will never happen, but keep the type checker happy *)
+                    if last == _ then
+                        last = n;
+                    end;
+
+                    scc.push(last);
+                    removed.add(last);
+                end;
+                scc.pop(); (* pop n *)
+                sccs.push((n, scc));
+            end;
+        end;
+    end;
+    sccs
+end;
+
+(* Keep the type checker happy *)
+str-def = funct(s) if s != _ then s else "" end end;
+
+CodeGen = funct() {
+    funcs: eml(),
+
+    def: funct this(name)
+        deps = eml();
+        lines = eml();
+        d = {
+            name, deps, lines,
+            dep: funct(dep) deps.push(dep) end,
+            code: funct(line) lines.push(line) end,
+        };
+        this.funcs.push(d);
+        d
+    end,
+
+    _writeSingle: funct this(cb, indent, def, assign)
+        let {name, lines} = def;
+        if assign then
+            lines.unshift(name +' " = " +' str-def(lines.shift()));
+            lines.push(str-def(lines.pop()) +' ";");
+        end;
+        do for line in lines then
+            cb(indent +' line);
+        end;
+    end,
+
+    _writeSCC: funct this(scc, cb, indent)
+        indent2 = indent +' "  ";
+        let (head, rest) = scc;
+        head.clearRDeps();
+
+        if rest.length > 0 then
+            cb(indent +' "let " +' head.val.name +' " future = (");
+            this._writeLevel(rest, cb, indent2);
+            this._writeSingle(cb, indent2, head.val, false);
+            cb(indent +' ").0;");
+        else
+            cb(indent +' "let " +' head.val.name +' " future = ");
+            this._writeSingle(cb, indent2, head.val, false);
+            cb(indent +' ";");
+        end;
+    end,
+
+    _writeLevel: funct this(nodes, cb, indent)
+        sccs = tarjan(nodes);
+        do for scc in sccs then
+            let (head, rest) = scc;
+            if rest.length == 0 && (head.deps.size == 0).0 then
+                this._writeSingle(cb, indent, head.val, true);
+                head.clearRDeps();
+            else
+                this._writeSCC(scc, cb, indent);
+            end;
+        end;
+    end,
+
+    write: funct this(cb, entrypoints)
+        (* preprocess into graph *)
+        all-nodes = map(this.funcs, Node);
+        nodemap = new-map(map(all-nodes, funct(n) (n.val.name, n) end));
+
+        do for let {name, deps} in this.funcs then
+            n1 = nodemap.get(name);
+            do for name2 in deps then
+                n2 = nodemap.get(name2);
+
+                (* keep type checker happy *)
+                if n1 != _ && (n2 != _).0 then
+                    n1.add(n2);
+                else
+                    do unsafe panic("can't find dep " +' name +' " -> " +' name2); end;
+                end;
+            end;
+        end;
+
+        nodes = eml();
+        do for name in entrypoints then
+            t = nodemap.get(name);
+            (* keep type checker happy *)
+            if t != _ then
+                nodes.push(t)
+            end;
+        end;
+        this._writeLevel(nodes, cb, "");
+    end,
+} end;

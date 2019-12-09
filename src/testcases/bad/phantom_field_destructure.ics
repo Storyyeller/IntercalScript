@@ -1,0 +1,1 @@
+do unsafe let {@phantom: foo} = transmute({}) end;

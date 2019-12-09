@@ -1,0 +1,5 @@
+id = funct(x) x end;
+
+q = id(case Foo(0));
+id(case Foo());
+let case Foo(a) = q;

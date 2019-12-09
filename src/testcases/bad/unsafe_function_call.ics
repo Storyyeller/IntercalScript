@@ -1,0 +1,2 @@
+f = funct [unsafe] () _ end;
+funct() f() end;

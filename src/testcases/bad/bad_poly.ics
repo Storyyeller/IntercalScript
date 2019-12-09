@@ -1,0 +1,8 @@
+{-# language rank1-types #-}
+www = $
+    funct(it)
+        x = it.bar;
+        {x}
+    end;
+www({bar: ""}).x & 8;
+

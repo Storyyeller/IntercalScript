@@ -1,0 +1,272 @@
+{-# language rank1-types #-}
+{-# language foreign-function-interface #-}
+
+`
+class List extends Array {
+    get(i) {return this[i]}
+    clear() {this.length = 0}
+    extend(items) {for (const e of items) {this.push(e);}}
+    last() {return this[this.length-1]}
+}
+`;
+
+
+new-list-mut = $if true then `it => List.from(it)` else
+    funct(it)
+        cell = {T mut: it.@iterable};
+        temp = {
+            @list mut: cell.T,
+            @iterable: cell.T,
+
+            (* mutable methods *)
+            pop: funct this () if true then this.@list else _ end end,
+            push: funct this (x) this.@list = x; 0 end,
+            clear: funct this () this.@list; _ end,
+            extend: funct this (it) this.@list = it.@iterable; _ end,
+            shift: funct this () if true then this.@list else _ end end,
+            unshift: funct this (x) this.@list = x; 0 end,
+
+            (* const methods *)
+            join: funct this (s) this.@list +' s +' "" end,
+            get: funct this (i) i+0; if true then this.@list else _ end end,
+            last: funct this () if true then this.@list else _ end end,
+
+            every: funct this (cb) cb(this.@list) && true end,
+            some: funct this (cb) cb(this.@list) && true end,
+
+            slice: funct this (start, end) start+end;this end,
+
+            length: 0,
+        };
+        cell.T = temp.@list;
+        temp
+    end
+end;
+
+new-list = $if true then `it => List.from(it)` else
+    if true then new-list-mut else
+        funct(it) _ = ``; {
+            @list: _,
+            @iterable: _,
+
+            join: _,
+            get: _,
+            last: _,
+            every: _,
+            some: _,
+            slice: _,
+            length: _,
+        } end
+    end
+end;
+
+eml = $if true then `() => List.of()` else funct() new-list-mut([]) end end;
+
+
+
+new-set-mut = $if true then `it => new Set(it)` else
+    funct(it)
+        T = if it == undef then `` else it.@iterable end;
+        cell = {T mut: T};
+        temp = {
+            @set mut: cell.T,
+            @iterable: cell.T,
+
+            add: funct this (x) this.@set = x; this end,
+            delete: funct this (x) this.@set; true end,
+            clear: funct this () this.@set; this end,
+
+            has: funct this (x) this.@set; true end,
+
+            size: 0,
+        };
+        cell.T = temp.@set;
+        temp
+    end
+end;
+
+new-set = $if true then `it => new Set(it)` else
+    if true then new-set-mut else
+        funct(it) _ = ``; {
+            @set: _,
+            @iterable: _,
+
+            has: _,
+            size: _,
+        } end
+    end;
+end;
+
+
+new-map-mut = $if true then `it => new Map(it)` else
+    funct(it)
+        let (K, V) = if it == undef then `` else it.@iterable end;
+        cell = {T mut: (K, V)};
+        temp = {
+            @map mut: cell.T,
+            @iterable: cell.T,
+
+            set: funct this (k, v) this.@map = (k, v); true end,
+            delete: funct this (k) this.@map; true end,
+            clear: funct this () this.@map; this end,
+
+            get: funct this (k) if true then this.@map.1 else undef end end,
+            has: funct this (k) true end,
+
+            keys: funct this () [this.@map.0] end,
+            values: funct this () [this.@map.1] end,
+
+            size: 0,
+        };
+        cell.T = temp.@map;
+        temp
+    end
+end;
+
+new-map = $if true then `it => new Map(it)` else
+    if true then new-map-mut else
+        funct(it) _ = ``; {
+            @map: _,
+            @iterable: _,
+
+            get: _,
+            has: _,
+
+            keys: _,
+            values: _,
+
+            size: _,
+        } end
+    end;
+end;
+
+(*////////////////////////////////////////////////////////////////////////*)
+NL = "
+";
+panic = if true then `x => {throw x}` else funct[unsafe](x) `0` end end;
+transmute = if true then `x => x` else funct[unsafe](x) `0` end end;
+
+
+
+(*////////////////////////////////////////////////////////////////////////*)
+enumerate = $if true then `function* (it) {let i=0; for(const res of it) {yield [i++, res];}}`
+    else funct(it) {@iterable: (0, it.@iterable)} end end;
+
+range2 = if true then `function* (i, end) {while (i < end) {yield i++;}}`
+    else funct(s, e) {@iterable: s+e} end end;
+range = funct(end_) range2(0, end_) end;
+range-ints = funct() range2(0, 2147483647) end;
+
+zip = $if true then `function* (iter1, iter2) {
+    iter1 = iter1[Symbol.iterator]()
+    iter2 = iter2[Symbol.iterator]()
+
+    while (1) {
+        const {done: d1, value: v1} = iter1.next()
+        const {done: d2, value: v2} = iter2.next()
+        if (d1 || d2) {
+            return
+        } else {
+            yield [v1, v2]
+        }
+    }
+}` else funct(it1, it2) {@iterable: (it1.@iterable, it2.@iterable)} end end;
+
+
+filter = $if true then funct(it, f)
+    `List.from`(it).filter(f)
+end else funct(it, f) f(it.@iterable) && true; new-list(it) end end;
+
+
+
+map = $if true then funct(it, f)
+    `List.from`(it, f)
+end else funct(it, f) new-list-mut([f(it.@iterable)]) end end;
+
+map-keys = $funct(it, f) map(it, funct(p) (f(p.0), p.1) end) end;
+map-vals = $funct(it, f) map(it, funct(p) (p.0, f(p.1)) end) end;
+
+sorted = $if true then `(it, f) => List.from(it).sort(f)` else
+    funct(it, f) t = it.@iterable; f(t, t)+0; new-list-mut(it) end end;
+
+
+parse-int = if true then `s => parseInt(s, 10)` else funct(s) s+'"";0/0 end end;
+
+
+int = if true then `x => ~~x` else funct(x) x<0; 0 end end;
+
+min = $funct(a, b) if a < b then a else b end end;
+max = $funct(a, b) if a > b then a else b end end;
+
+
+
+id = $funct(x) x end;
+
+try = $if true then
+    `f => {try{return [f(), null]} catch(err) {return [null, err]}}`
+else
+    funct[unsafe](f) (f(), null) end
+end;
+
+
+
+
+(* Debug functions *)
+stringify = if true then `
+function(obj) {
+    const MAXLEN = 230;
+    const stack = [[true, obj]];
+    const visited = new Set;
+    let s = '';
+    while (stack.length && s.length < MAXLEN) {
+        const [literal, obj] = stack.pop();
+        if (literal && typeof obj === 'string') {s += obj; continue;}
+        if (obj === null) {s += 'null'; continue;}
+        if (visited.has(obj)) {s += '...'; continue;}
+
+        switch (typeof obj) {
+            case 'undefined': s += 'undef'; break;
+            case 'boolean': case 'number': s += obj.toString(); break;
+            case 'string': s += '"' + obj + '"'; break;
+            case 'function':
+                let name = obj.name;
+                if (name) {
+                    // Unmangle ICS function names
+                    if (name.startsWith('$')) {
+                        name = name.slice(1).split('$').join('-');
+                    }
+                    s += '<funct ' + name + '>';
+                } else {
+                    s += '<funct>';
+                }
+                break;
+            case 'object':
+                const tag = obj[Symbol.toStringTag];
+                if (tag) {s += 'case ' + tag;}
+                const is_array_like = Object.keys(obj).every((k, i) => k === ('' + i));
+
+                stack.push([true, is_array_like ? ')' : '}']);
+                let first = true;
+                for (let [k, v] of Object.entries(obj).reverse()) {
+                    if (first) {first = false} else {stack.push([true, ', '])}
+                    stack.push([false, v]);
+                    if (!is_array_like) {stack.push([true, k + ': ']);}
+                }
+                s += is_array_like ? '(' : '{';
+                visited.add(obj);
+                break;
+            default: s += '<' + typeof obj + '>'; break;
+        }
+    }
+    return s;
+}
+` else funct(s) "" end end;
+
+print = if true then `function(...args) {
+    const formatted = args.map(stringify);
+    // Avoid any formatting weirdness with %s, %o, etc. in the first string
+    if (formatted.length && formatted[0].includes('%')) {formatted.unshift('');}
+    console.log(...formatted);
+}` else funct(s) _ end end;
+
+trace = if true then `console.trace` else funct() _ end end;

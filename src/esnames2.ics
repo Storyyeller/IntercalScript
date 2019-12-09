@@ -1,0 +1,52 @@
+#import {re} from "std:regex"
+#import {s} from "std:strings"
+
+reserved = new-set(s.split("await break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof new return super switch this throw try typeof var void while with yield enum null true false let static implements package protected interface private public", " "));
+
+used-names = new-set([...reserved, ...s.split("__proto__ require module Math Symbol Object Function", " ")]);
+
+do unsafe
+    ID-START-RE = re.new("^[a-zA-Z_]");
+end;
+
+is-es-id = funct(name)
+    !s.includes(name, "-") && (s.match(name, ID-START-RE) != null).0
+end;
+
+is-int-key = funct(name)
+    n = parse-int(name);
+    i = int(n);
+    n == i && (i >= 0).0 && ("" +' i == name).0
+end;
+
+CR = s.fromCodePoint(13);
+(* ES2019 allows u2028 and u2029 in string literals, so no need to escape them anymore *)
+(* Make sure \ -> \\ is first so it doesn't interfer with the other replacements *)
+ESCAPES = [("\", "\\"), (s.QUOTE, R"(\")"), (NL, "\n"), (CR, "\r")];
+
+StringFormat = {
+    to-lit: funct(val)
+        do for let (old, new) in ESCAPES then
+            val = s.replace(val, old, new);
+        end;
+        s.QUOTE +' val +' s.QUOTE
+    end,
+};
+
+to-es-prop = funct(name)
+    if name == "__proto__" then
+        "['__proto__']"
+    else if !is-es-id(name) && !is-int-key(name) then
+        StringFormat.to-lit(name)
+    else
+        name
+    end end
+end;
+
+mangle = funct(name)
+    if used-names.has(name) || !is-es-id(name) then
+        "$" +' s.replace(name, "-", "$")
+    else
+        name
+    end;
+end;

@@ -1,0 +1,3 @@
+funct()
+    let foo future = (foo);
+end;

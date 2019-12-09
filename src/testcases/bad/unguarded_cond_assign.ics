@@ -1,0 +1,4 @@
+{-# language rank1-types #-}
+q = $
+    if let case Foo(a) = case Foo(0) then _ end;
+

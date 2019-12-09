@@ -1,0 +1,15 @@
+{-# language foreign-function-interface #-}
+{-# language rank1-types #-}
+q = $funct()
+    obj = {x mut: ``};
+
+    funct(x)
+        obj.x = x;
+        obj.x
+    end
+end;
+
+f = $q();
+f(4) + 3;
+f("") +' "";
+

@@ -1,0 +1,13 @@
+out/
+out2/
+
+out*.txt
+src/test*.ics
+test.*
+
+profile.txt
+trace.txt
+isolate-*
+
+node_modules
+package-lock.json

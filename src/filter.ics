@@ -1,0 +1,98 @@
+
+let CofiniteSet future = funct(rev, fs) {
+    rev, fs,
+
+    empty: funct this() (this.fs.size == 0).0 && !this.rev end,
+    all: funct this() (this.fs.size == 0).0 && this.rev end,
+    has: funct this(item) this.fs.has(item) != this.rev end,
+
+    complement: funct this() CofiniteSet(!this.rev, this.fs) end,
+
+    union: funct this(other)
+        if (this == other).0 || other.empty() then this else
+        if this.empty() || other.all() then other else
+
+        if this.rev then
+            items = new-set(filter(this.fs, funct(x) !other.has(x) end));
+            CofiniteSet(true, items)
+        else if other.rev then
+            other.union(this)
+        else
+            CofiniteSet(false, new-set([...this.fs, ...other.fs]))
+        end end
+
+        end end;
+    end,
+
+    intersect: funct this(other)
+        if (this == other).0 || other.all() then this
+        else if this.all() || other.empty() then other
+        else this.complement().union(other.complement()).complement()
+        end end
+    end,
+
+    subtract: funct this(other)
+        if other.empty() then this
+        else if (this == other).0 || other.all() then CofiniteSet(false, new-set(_))
+        else other.union(this.complement()).complement()
+        end end
+    end,
+} end;
+
+CF_EMPTY = CofiniteSet(false, new-set(_));
+CF_ALL = CofiniteSet(true, new-set(_));
+
+let Filter future = funct(null, undef, other, cases) {
+    null,
+    undef,
+    other,
+    cases, (*CFSet, has no meaning if !this.other*)
+
+    empty: funct this() !this.null && !this.undef && !this.other end,
+    all: funct this() this.null && this.undef && this.other && this.cases.all() end,
+
+    union: funct this(rhs)
+        if this == rhs then rhs else
+            Filter(
+                null || rhs.null,
+                undef || rhs.undef,
+                other || rhs.other,
+                cases.union(rhs.cases),
+            )
+        end
+    end,
+
+    intersect: funct this(rhs)
+        if this == rhs then rhs else
+            Filter(
+                null && rhs.null,
+                undef && rhs.undef,
+                other && rhs.other,
+                cases.intersect(rhs.cases),
+            )
+        end
+    end,
+
+    subtract: funct this(rhs)
+        Filter(
+            null && !rhs.null,
+            undef && !rhs.undef,
+            other && !rhs.other,
+            cases.subtract(rhs.cases),
+        )
+    end,
+} end;
+
+FILTER = {
+    NONE: Filter(false, false, false, CF_EMPTY),
+    ALL: Filter(true, true, true, CF_ALL),
+    NULL: Filter(true, false, false, CF_EMPTY),
+    UNDEF: Filter(false, true, false, CF_EMPTY),
+    NOTNULL: Filter(false, true, true, CF_ALL),
+    NOTUNDEF: Filter(true, false, true, CF_ALL),
+};
+
+filter-case = funct(lbl)
+    set = CofiniteSet(false, new-set([lbl]));
+    (Filter(true, true, true, set), Filter(true, true, true, set.complement()))
+end;

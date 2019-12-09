@@ -1,0 +1,11 @@
+f = funct(x)
+    if let case Foo() = x then
+        let case Bar() = x;
+    else
+        0
+    end
+end;
+
+funct(x)
+    f(x)
+end(case Foo());

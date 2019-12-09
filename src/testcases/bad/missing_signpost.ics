@@ -1,0 +1,7 @@
+{-# language foreign-function-interface #-}
+funct(x)
+    f = funct(y)
+        if y != null then y else `` end
+    end;
+    f(x)
+end("") * 2;

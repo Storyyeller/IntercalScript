@@ -1,0 +1,8 @@
+{-# language foreign-function-interface #-}
+q = ``;
+x = null;
+if x == q.null then
+    0
+else
+    x.foo
+end;

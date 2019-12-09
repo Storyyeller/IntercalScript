@@ -1,0 +1,5 @@
+{-# language rank1-types #-}
+a = $4;
+b = $"hello";
+x = $$case Foo{a, b};
+let case Foo{a, b} = $x;

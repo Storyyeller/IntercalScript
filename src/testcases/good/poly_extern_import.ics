@@ -1,0 +1,7 @@
+{-# language rank1-types #-}
+{-# language foreign-function-interface #-}
+
+#import {strict} from `assert`
+
+q =$
+    funct(x) strict(x); x end;

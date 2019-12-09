@@ -1,0 +1,1081 @@
+#import {PairSet} from "util"
+#import {FILTER, CF_EMPTY, CF_ALL} from "filter"
+#import {GarbageCollector, GCable, LIVE, new-id} from "gc"
+
+refcb = funct(n) n.ref() end;
+_idcb = funct(n) n._id end;
+
+let TypeSet future = funct(s) {
+    s: new-set-mut(s),
+
+    copy: funct this() TypeSet(map(this.s, refcb)) end,
+    deepCopy: funct this(copies) TypeSet(map(this.s, funct(n) copies._getCopy(n).ref() end)) end,
+    drop: funct this(droplist) droplist.extend(this.s) end,
+    debug: funct this() map(this.s, _idcb) end,
+
+    (* borrowed other *)
+    merge: funct this(other)
+        changed = false;
+        do for n in other.iter() then
+            if !this.s.has(n) then
+                this.s.add(n.ref());
+                changed = true;
+            end;
+        end;
+        changed
+    end,
+
+    _getChildren: funct this(out) out.extend(this.iter()) end,
+    iter: funct this() this.s end,
+} end;
+
+let FieldSet future = funct(fields, expls) {
+    fields: new-map-mut(fields),
+    (*
+        For negative FieldSets (union), there is one expl per field,
+        For positive FieldSets (intersect), we instead have an expl of why field is *absent*
+    *)
+    expls: new-map-mut(expls),
+
+    union: funct this(other)
+        changed = false;
+        do for let (lbl, n2) in other.fields then
+            n = this.fields.get(lbl);
+            if n != undef then
+                if n.merge(n2) then changed = true; end
+            else
+                this.fields.set(lbl, n2.copy());
+                this.expls.set(lbl, other.expls.get(lbl));
+                changed = true;
+            end;
+        end;
+        changed
+    end,
+
+    intersect: funct this(other, droplist, default-expl)
+        changed = false;
+        do for let (lbl, n) in this.fields then
+            n2 = other.fields.get(lbl);
+            if n2 != undef then
+                if n.merge(n2) then changed = true; end
+            else
+                n.drop(droplist);
+                this.fields.delete(lbl);
+
+                other-expl = other.expls.get(lbl);
+                if other-expl == undef then other-expl = default-expl end;
+                this.expls.set(lbl, other-expl);
+                changed = true;
+            end;
+        end;
+        changed
+    end,
+
+    copy: funct this()
+        fields = map-vals(this.fields, funct(n) n.copy() end);
+        FieldSet(fields, this.expls)
+    end,
+
+    deepCopy: funct this(copies)
+        fields = map-vals(this.fields, funct(n) n.deepCopy(copies) end);
+        FieldSet(fields, this.expls)
+    end,
+
+    _getChildren: funct this(out)
+        do for ts in this.fields.values() then
+            ts._getChildren(out);
+        end;
+    end,
+} end;
+new-field-set = funct() FieldSet(undef, undef) end;
+
+
+
+let Type future = (
+
+SingletonNode = funct(neg) {
+    neg,
+    (* default to bottom for positive and top for negative *)
+    present mut: neg,
+    expl mut: null,
+    expl-type mut: null,
+
+    mergeFrom: funct this (other)
+        if (this.neg != other.present).0 && (this.present != other.present).0 then
+            this.present = other.present;
+            this.expl = other.expl;
+            this.expl-type = other.expl-type;
+            true
+        else
+            false
+        end
+    end,
+
+    copyFrom: funct this (other, copies)
+        this.present = other.present;
+        this.expl = other.expl;
+        this.expl-type = other.expl-type;
+    end,
+} end;
+
+NumberNode = funct(neg) {
+    neg,
+    (* redundant attribute: present if level > 0 *)
+    present mut: neg,
+    level mut: if neg then 2 else 0 end,
+    expl mut: null,
+    expl-type mut: null,
+
+    mergeFrom: funct this (other)
+        if (other.level > this.level && !this.neg).0 || (other.level < this.level && this.neg).0 then
+            this.present = other.present;
+            this.level = other.level;
+            this.expl = other.expl;
+            this.expl-type = other.expl-type;
+            true
+        else
+            false
+        end
+    end,
+
+    copyFrom: funct this (other, copies)
+        this.present = other.present;
+        this.level = other.level;
+        this.expl = other.expl;
+        this.expl-type = other.expl-type;
+    end,
+} end;
+
+FuncNode = funct(neg) {
+    neg,
+
+    (* redundant field *)
+    present mut: neg,
+
+    (*
+        pos: why present, neg: why not top
+        for negative, we need expl to cover both "Why not present" and "why is this field missing"
+    *)
+    expl mut: null,
+    expl-type mut: null,
+
+    is-top mut: neg,
+    (* ignored when is-top = true *)
+    args mut: new-field-set(),
+    ret mut: TypeSet(_),
+
+    unsafe mut: neg,
+    unsafe-expl mut: null,
+
+    mergeFrom: funct this (other, droplist)
+
+        changed = false;
+        if (this.neg != other.present).0 && (this.present != other.present).0 then
+            this.present = other.present;
+            this.expl = other.expl;
+            this.expl-type = other.expl-type;
+            changed = true;
+        end;
+
+        if (this.neg != other.unsafe).0 && (this.unsafe != other.unsafe).0 then
+            this.unsafe = other.unsafe;
+            this.unsafe-expl = other.unsafe-expl;
+            changed = true;
+        end;
+
+        if this.ret.merge(other.ret) then changed = true; end;
+        if this.neg then
+            if !other.is-top then
+                if this.is-top then
+                    this.is-top = false;
+                    this.args = other.args.copy();
+                    this.expl = other.expl;
+                    this.expl-type = other.expl-type;
+                    changed = true;
+                else
+                    if this.args.intersect(other.args, droplist, other.expl) then changed = true; end;
+                end;
+            end;
+        else
+            if this.args.union(other.args) then changed = true; end;
+        end;
+        changed
+    end,
+
+    copyFrom: funct this (other, copies)
+        this.present = other.present;
+        this.expl = other.expl;
+        this.expl-type = other.expl-type;
+
+        this.unsafe = other.unsafe;
+        this.unsafe-expl = other.unsafe-expl;
+
+        this.is-top = other.is-top;
+        this.args = other.args.deepCopy(copies);
+        this.ret = other.ret.deepCopy(copies);
+    end,
+
+    _getChildren: funct this(out)
+        let {args} = this;
+        if !this.is-top then args._getChildren(out) end;
+        this.ret._getChildren(out);
+    end,
+} end;
+
+let ObjNode future = funct(neg, _id) {
+    neg, _id,
+
+    (*
+        ObjNode = Absent | Some(FieldSet, FieldSet)
+        reads and writes are ignored when present = false
+        however, they still need to be set to empty field set
+        because they are accessed or kept in some cases
+    *)
+    present mut: neg,
+
+    expl mut: null,
+    expl-type mut: null,
+    reads mut: new-field-set(),
+    writes mut: new-field-set(),
+
+    explMissingRead: funct this (lbl)
+        expl = this.reads.expls.get(lbl);
+        if expl == undef then this.expl else expl end
+    end,
+
+    explMissingWrite: funct this (lbl)
+        expl = this.writes.expls.get(lbl);
+        if expl == undef then this.expl else expl end
+    end,
+
+    debug: funct this ()
+        [this._id, this.neg, [...this.reads.fields.keys()]]
+    end,
+
+    mergeFrom: funct this (other, droplist)
+        (*log("Obj.mergeFrom", this.debug(), other.debug());*)
+        changed = false;
+
+        if this.neg then
+            if this.present then
+                if other.present then
+                    if this.reads.union(other.reads) then changed = true; end;
+                    if this.writes.union(other.writes) then changed = true; end;
+                else
+                    this.present = false;
+                    this.expl = other.expl;
+                    this.expl-type = other.expl-type;
+                    changed = true;
+                end;
+            end;
+        else
+            if other.present then
+                if this.present then
+                    if this.reads.intersect(other.reads, droplist, other.expl) then changed = true; end;
+                    if this.writes.intersect(other.writes, droplist, other.expl) then changed = true; end;
+                else
+                    this.present = true;
+                    this.expl = other.expl;
+                    this.reads = other.reads.copy();
+                    this.writes = other.writes.copy();
+                    changed = true;
+                end;
+            end;
+        end;
+        changed
+    end,
+
+    copyFrom: funct this (other, copies)
+        this.present = other.present;
+        this.expl = other.expl;
+        this.expl-type = other.expl-type;
+        this.reads = other.reads.deepCopy(copies);
+        this.writes = other.writes.deepCopy(copies);
+    end,
+
+    _getChildren: funct this(out)
+        this.reads._getChildren(out);
+        this.writes._getChildren(out);
+    end,
+
+    _shallowReadCopy: funct this()
+        (* Used by CaseNode, which doesn't allow writes, so don't copy those *)
+        obj = ObjNode(this.neg, -2);
+        obj.present = this.present;
+        obj.expl = this.expl;
+        obj.reads = this.reads.copy();
+        (* obj.writes is already empty by default *)
+        obj
+    end,
+} end;
+
+CaseNode = funct(neg) {
+    neg,
+
+    (*
+        This field is theoretically redundant but kept around for improved error messages
+        so we can distinguish case of enum expected with no valid cases from non-enum expected
+    *)
+    present mut: neg,
+
+    cases: new-map-mut(_), (* lbl -> ObjNode *)
+    itops mut: if neg then CF_ALL else CF_EMPTY end,
+
+    (*
+        Positive: why is this case present?
+        Negative: why is this case absent?
+    *)
+    expls mut: new-map-mut(_),
+    expl mut: null,
+    expl-type mut: null,
+
+    getExpl: funct this (lbl)
+        expl = this.expls.get(lbl);
+        if expl == undef then this.expl else expl end
+    end,
+
+    mergeFrom: funct this (other, droplist, filter)
+        changed = false;
+
+        (*
+            We copy expl over for improved error messages but
+            don't set changed since the present field has no real
+            meaning. If it matters, the merging of cases and/or
+            itops will cause changed to be set anyway.
+        *)
+        if this.neg != other.present then
+            this.present = other.present;
+            this.expl = other.expl;
+            this.expl-type = other.expl-type;
+        end;
+
+        if this.neg then
+            removed_itops = this.itops.intersect(filter.cases.subtract(other.itops));
+            this.itops = this.itops.subtract(removed_itops);
+            if !removed_itops.empty() then changed = true; end;
+
+            do for let (lbl, obj1) in this.cases then
+                if filter.cases.has(lbl) && !other.itops.has(lbl) then
+                    obj2 = other.cases.get(lbl);
+                    if obj2 != undef then
+                        if obj1.mergeFrom(obj2, droplist) then changed = true; end;
+                    else
+                        (* Effectively drop obj1 by adding all its children to the droplist *)
+                        obj1._getChildren(droplist);
+
+                        this.cases.delete(lbl);
+                        this.expls.set(lbl, other.getExpl(lbl));
+                        changed = true;
+                    end;
+                end; (* else keep lbl, obj1 as is *)
+            end;
+
+            if removed_itops.rev then
+                do for let (lbl, obj2) in other.cases then
+                    if removed_itops.has(lbl) then
+                        this.cases.set(lbl, obj2._shallowReadCopy());
+                    end;
+                end;
+                this.expl = other.expl;
+                this.expl-type = other.expl-type;
+            else
+                do for lbl in removed_itops.fs then
+                    temp = other.cases.get(lbl);
+                    if temp != undef then
+                        this.cases.set(lbl, temp._shallowReadCopy());
+                    else
+                        this.expls.set(lbl, other.getExpl(lbl));
+                    end;
+                end;
+            end;
+        else (* positive case *)
+            do for let (lbl, obj2) in other.cases then
+                if filter.cases.has(lbl) then
+                    obj1 = this.cases.get(lbl);
+                    if obj1 != undef then
+                        if obj1.mergeFrom(obj2, droplist) then changed = true; end;
+                    else
+                        this.cases.set(lbl, obj2._shallowReadCopy());
+                        this.expls.set(lbl, other.expls.get(lbl));
+                        changed = true;
+                    end;
+                end;
+            end;
+        end;
+        changed
+    end,
+
+    copyFrom: funct this (other, copies)
+        this.present = other.present;
+        this.expl = other.expl;
+        this.expl-type = other.expl-type;
+        this.expls = new-map-mut(other.expls);
+        this.itops = other.itops;
+
+        do for let (lbl, obj) in other.cases then
+            obj2 = ObjNode(obj.neg, -3);
+            obj2.copyFrom(obj, copies);
+            this.cases.set(lbl, obj2);
+        end;
+    end,
+
+    _getChildren: funct this(out)
+        do for obj in this.cases.values() then obj._getChildren(out) end;
+    end,
+} end;
+
+(*Type*) funct(neg)
+    let {_init, alive, ref, _gc_free, new_count, freed_count, get_live, _dropShallow, drop} = GCable.prototype;
+
+    _id = new-id();
+    new = {
+        _ref mut: 1,
+        _color mut: LIVE,
+        _id,
+
+        neg,
+        flow mut: new-set-mut(_),
+        pflow mut: new-map-mut(_),
+        solve mut: new-set-mut(_),
+        signpost mut: false,
+
+        null: SingletonNode(neg, _id),
+        undef: SingletonNode(neg, _id),
+        string: SingletonNode(neg, _id),
+        bool: SingletonNode(neg, _id),
+        num: NumberNode(neg, _id),
+        func: FuncNode(neg, _id),
+        obj: ObjNode(neg, _id),
+        enum: CaseNode(neg, _id),
+
+        mergeFromNoFlow: funct this (other, droplist, filter)
+            if this == other then false else
+
+            changed = false;
+            if filter.null && this.null.mergeFrom(other.null) then changed = true end;
+            if filter.undef && this.undef.mergeFrom(other.undef) then changed = true end;
+            if filter.other then
+                if this.string.mergeFrom(other.string) then changed = true; end;
+                if this.bool.mergeFrom(other.bool) then changed = true; end;
+                if this.num.mergeFrom(other.num) then changed = true; end;
+                if this.func.mergeFrom(other.func, droplist) then changed = true; end;
+                if this.obj.mergeFrom(other.obj, droplist) then changed = true; end;
+                if this.enum.mergeFrom(other.enum, droplist, filter) then changed = true; end;
+            end;
+            changed
+            end
+        end,
+
+        mergeFrom: funct this (other, droplist, filter)
+            this.mergeFromNoFlow(other, droplist, filter);
+            do for q in other.flow then this.addPFlow(q, filter) end;
+            do for let (q, filt) in other.pflow then this.addPFlow(q, filter.intersect(filt)) end;
+        end,
+
+        mergeIntoOtherFlow: funct this (other, droplist)
+            if this.hasFlow() && other.hasFlow() then
+                this.solve.add(other);
+                other.solve.add(this);
+            end;
+
+            seen = new-set-mut(_);
+            seen-partial = new-map-mut(_); (* node -> filter *)
+            stack = new-list-mut([(true, other, FILTER.ALL)]);
+
+            do while popped = stack.pop(); popped != _ then
+                let (expand, other, filter) = popped;
+
+                if expand then
+                    do for let (q, filt) in other.pflow then stack.push((false, q, filter.intersect(filt))) end;
+                    do for q in other.flow then stack.push((false, q, filter)) end;
+                else
+                    if !seen.has(other) then
+                        (*log("mIOF", this._id, other._id, other.signpost);*)
+
+                        if filter.all() then
+                            seen.add(other);
+                            seen-partial.delete(other);
+
+                            if other.signpost || other.mergeFromNoFlow(this, droplist, FILTER.ALL) then
+                                do for q in other.solve then stack.push((true, q, FILTER.ALL)) end;
+                            end;
+                        else
+                            filt = filter;
+                            filt2 = seen-partial.get(other);
+                            if filt2 == undefined then filt2 = FILTER.NONE end;
+
+                            if !filt.subtract(filt2).empty() then
+                                seen-partial.set(other, filt2.union(filt));
+
+                                if other.signpost || other.mergeFromNoFlow(this, droplist, filt) then
+                                    do for q in other.solve then stack.push((true, q, filt)) end;
+                                end;
+                            end;
+                        end;
+                    end;
+                end;
+            end;
+        end,
+
+        (* other borrowed *)
+        copyFrom: funct this (other, copies)
+            this.signpost = other.signpost;
+            if !this.signpost then
+                this.null.copyFrom(other.null, copies);
+                this.undef.copyFrom(other.undef, copies);
+                this.string.copyFrom(other.string, copies);
+                this.bool.copyFrom(other.bool, copies);
+                this.num.copyFrom(other.num, copies);
+                this.func.copyFrom(other.func, copies);
+                this.obj.copyFrom(other.obj, copies);
+                this.enum.copyFrom(other.enum, copies);
+            end;
+
+            copycb = funct(n) copies._getCopy(n) end;
+            this.flow = new-set-mut(map(other.flow, copycb));
+            this.pflow = new-map-mut(map-keys(other.pflow, copycb));
+            this.solve = new-set-mut(map(other.solve, copycb));
+        end,
+
+        _addFlowSingle: funct this (other)
+            this.flow.add(other);
+            this.pflow.delete(other);
+        end,
+
+        _addPFlowSingle: funct this (other, filter)
+            if !this.flow.has(other) && !filter.empty() then
+                old = this.pflow.get(other);
+                if old != undef then
+                    filter = old.union(filter);
+                end;
+                if filter.all() then
+                    this._addFlowSingle(other);
+                else
+                    this.pflow.set(other, filter);
+                end;
+            end;
+        end,
+
+        addFlow: funct this (other)
+            this._addFlowSingle(other);
+            other._addFlowSingle(this);
+        end,
+
+        addPFlow: funct this (other, filter)
+            this._addPFlowSingle(other, filter);
+            other._addPFlowSingle(this, filter);
+        end,
+
+        hasFlow: funct this () this.flow.size + this.pflow.size > 0 end,
+
+        _getChildren: funct this ()
+            children = eml();
+            this.func._getChildren(children);
+            this.obj._getChildren(children);
+            this.enum._getChildren(children);
+            children
+        end,
+
+        _free: funct this ()
+            if (this.solve.size > 0).0 && (this.flow.size + this.pflow.size > 0).0 then
+                (* leave this node alive as a signpost *)
+                this.signpost = true;
+            else
+                (*
+                    hack: only call _gc_free (which is responsible for setting color to FREED)
+                    if not a signpost so that signposts will still return true for alive()
+                *)
+                this._gc_free();
+
+                do for other in this.solve then other.solve.delete(this) end;
+                do for other in this.flow then other.flow.delete(this) end;
+                do for let (other) in this.pflow then other.pflow.delete(this) end;
+                this.solve.clear();
+                this.flow.clear();
+                this.pflow.clear();
+            end;
+        end,
+
+        (* GCable *)
+        _init, alive, ref, _gc_free, new_count, freed_count, get_live, _dropShallow, drop,
+    };
+    new._init();
+    new
+end
+).0;
+
+finish-droplist = funct(droplist, gc)
+    do while node = droplist.pop(); node != _ then
+        node._dropShallow(droplist, gc);
+    end;
+end;
+
+Copier = funct(factory) {
+    factory,
+    droplist: eml(),
+
+    (* node => node. Values may been unfinished while a deep copy is running *)
+    map: new-map-mut(_),
+    (* set of copy nodes that have already been finished *)
+    finished: new-set-mut(_),
+    (* stack of (node, copy) pairs that still need to be finished *)
+    stack: eml(),
+
+    (* Return possibly unfinished copy of node. Takes node as borrowed and returns borrowed copy *)
+    _getCopy: funct this(node)
+        copy = this.map.get(node);
+        if copy == _ then
+            copy = this.factory._add(Type(node.neg));
+            this.map.set(node, copy);
+            (*log("copy " +' node._id +' " -> " +' copy._id);*)
+            this.droplist.push(copy);
+            this.stack.push((node, copy));
+        end;
+        copy
+    end,
+
+    _finishPending: funct this()
+        do while popped = this.stack.pop(); popped != _ then
+            let (node, copy) = popped;
+            if !this.finished.has(copy) then
+                (* Placeholder copies for deps already created, now copy over contents and finish *)
+                copy.copyFrom(node, this);
+                this.finished.add(copy);
+            end;
+        end;
+    end,
+
+    (* takes node as owned *)
+    copy: funct this(node)
+        copy = this._getCopy(node);
+        this._finishPending();
+        this.droplist.push(node);
+        copy.ref()
+    end,
+
+    drop: funct this() finish-droplist(this.droplist, this.factory.uni.gc) end,
+} end;
+
+Merger = funct(factory) {
+    factory,
+    droplist: eml(),
+
+    mergeOwned: funct this(lhs, rhs)
+        this.droplist.push(lhs);
+        this.droplist.push(rhs);
+        neg = lhs.neg;
+        merged = this.factory._add(Type(neg));
+        merged.mergeFrom(lhs, this.droplist, FILTER.ALL);
+        merged.mergeFrom(rhs, this.droplist, FILTER.ALL);
+        merged
+    end,
+
+    finish: funct this() finish-droplist(this.droplist, this.factory.uni.gc) end,
+} end;
+
+Solver = funct(reporter) {
+    reporter,
+    memo: PairSet(),
+    stack: eml(),
+
+    reportError: funct this(message, src-expl, src-msg, dest-expl, dest-msg)
+        if (src-expl == null).0 || (dest-expl == null).0 || (src-expl == _).0 || (dest-expl == _).0 then
+            this.reporter.internalError();
+        else
+            message = message +' NL
+                +' src-expl.print(src-msg) +' NL
+                +' dest-expl.print(dest-msg);
+            this.reporter.onError(message);
+        end;
+    end,
+
+    checkHeadSub: funct this(lhs, rhs, lhs-expl-type)
+        lhs-expl = lhs.expl;
+        rhs-expl = rhs.expl;
+        rhs-expl-type = rhs.expl-type;
+
+        if lhs-expl != null && (rhs-expl != null).0 && (rhs-expl-type != null).0 then
+            this.reportError("TypeError: Unexpected " +' lhs-expl-type,
+                lhs-expl, "Note: " +' lhs-expl-type +' " originates here",
+                rhs-expl, "but it is required to be " +' rhs-expl-type +' " here");
+        else
+            this.reporter.internalError();
+        end;
+    end,
+
+    checkHead: funct this(lhs, rhs, lhs-expl-type)
+        if lhs.present && !rhs.present then
+            this.checkHeadSub(lhs, rhs, lhs-expl-type);
+        end;
+    end,
+
+    checkHeads: funct this(lhs, rhs)
+        this.checkHead(lhs.null, rhs.null, "null value");
+        this.checkHead(lhs.undef, rhs.undef, "undefined value");
+        this.checkHead(lhs.string, rhs.string, "string");
+        this.checkHead(lhs.bool, rhs.bool, "bool");
+        this.checkHead(lhs.func, rhs.func, "function");
+        this.checkHead(lhs.obj, rhs.obj, "object");
+        this.checkHead(lhs.enum, rhs.enum, "case object");
+
+        if lhs.num.level > rhs.num.level then
+            ldesc = if lhs.num.level > 1 then "number" else "int" end;
+            this.checkHeadSub(lhs.num, rhs.num, ldesc);
+        end;
+    end,
+
+    pushSets: funct this(ts1, ts2)
+        do for n in ts1.iter() then
+            do for n2 in ts2.iter() then
+                this.stack.push((n, n2));
+            end;
+        end;
+    end,
+
+    biunifyObjects: funct this(lo, ro)
+
+        do for let (lbl, ts2) in ro.reads.fields then
+            ts1 = lo.reads.fields.get(lbl);
+            if ts1 == undef then
+                this.reportError("TypeError: Object has no property '" +' lbl +' "'",
+                    lo.explMissingRead(lbl), "Note: object is defined here without property " +' lbl,
+                    ro.reads.expls.get(lbl), "but is required to have property " +' lbl +' " here");
+            else
+                this.pushSets(ts1, ts2);
+            end;
+        end;
+
+        do for let (lbl, ts2) in ro.writes.fields then
+            ts1 = lo.writes.fields.get(lbl);
+            if ts1 == undef then
+                (* First check if field is missing entirely *)
+                if !lo.reads.fields.has(lbl) then
+                    this.reportError("TypeError: Object has no property '" +' lbl +' "'",
+                        lo.explMissingWrite(lbl), "Note: object is defined here without property " +' lbl,
+                        ro.writes.expls.get(lbl), "but is required to have property " +' lbl +' " here");
+                else
+                    this.reportError("TypeError: Can't write to immutable property '" +' lbl +' "'",
+                        lo.explMissingWrite(lbl), "Note: property " +' lbl +' " is defined here as immutable",
+                        ro.writes.expls.get(lbl), "but is modified here");
+                end;
+            else
+                this.pushSets(ts2, ts1);
+            end;
+        end;
+    end,
+
+    solve: funct this(droplist, pair)
+        this.stack.push(pair);
+        do while p = this.stack.pop(); p != _ then
+            let (lhs, rhs) = p;
+            if !this.memo.has(lhs, rhs) then
+                (*log("Solve", lhs._id, rhs._id);*)
+                this.memo.add(lhs, rhs);
+                this._solvePair(lhs, rhs, droplist);
+            end;
+        end;
+    end,
+
+    _solvePair: funct this(lhs, rhs, droplist)
+
+        lhs.mergeIntoOtherFlow(rhs, droplist);
+        rhs.mergeIntoOtherFlow(lhs, droplist);
+        this.checkHeads(lhs, rhs);
+
+        if !rhs.func.is-top && lhs.func.present then
+            if lhs.func.unsafe && !rhs.func.unsafe then
+                this.reportError("TypeError: Safety violation",
+                    lhs.func.unsafe-expl, "Note: function is defined as unsafe here",
+                    rhs.func.unsafe-expl, "but is called from a safe context here");
+            end;
+
+            la = lhs.func.args;
+            ra = rhs.func.args;
+            errored = false;
+            do for let (lbl, ts1) in la.fields then
+                ts2 = ra.fields.get(lbl);
+                (* avoid reporting multiple errors for the same issue (fake short circuit break) *)
+                if !errored then
+                    if ts2 == undef then
+                        expl = ra.expls.get(lbl);
+                        expl = if expl == undef then rhs.func.expl else expl end;
+
+                        if lbl == "this" then
+                            this.reportError("TypeError: Expected method receiver",
+                                la.expls.get(lbl), "Note: function is defined as a method here",
+                                expl, "but is called without a receiver here");
+                        else
+                            this.reportError("TypeError: Expected more than " +' lbl +' " arguments",
+                                la.expls.get(lbl), "Note: function is defined here",
+                                expl, "but is called without enough arguments here");
+                        end;
+                        errored = true;
+                    else
+                        this.pushSets(ts2, ts1);
+                    end;
+                end;
+            end;
+
+            this.pushSets(lhs.func.ret, rhs.func.ret);
+        end;
+
+        (* rhs check is redundant, but needed for non fatal errors *)
+        if lhs.obj.present && rhs.obj.present then
+            this.biunifyObjects(lhs.obj, rhs.obj);
+        end;
+
+        if lhs.enum.present && !rhs.enum.itops.all() then
+            lc = lhs.enum;
+            rc = rhs.enum;
+
+            do for let (lbl, obj1) in lc.cases then
+                if !rc.itops.has(lbl) then
+                    obj2 = rc.cases.get(lbl);
+                    if obj2 == undef then
+                        this.reportError("TypeError: Unhandled case " +' lbl,
+                            lc.expls.get(lbl), "Note: case " +' lbl +' " originates here",
+                            rc.getExpl(lbl), "but it is not handled here.");
+                    else
+                        this.biunifyObjects(obj1, obj2);
+                    end;
+                end;
+            end;
+        end;
+    end,
+} end;
+
+_c = {c mut: 0};
+_count = funct() t = _c.c; _c.c = t + 1; t end;
+
+Universe = funct() {
+    _id: _count(),
+    gc: GarbageCollector(),
+    locked mut: false,
+} end;
+MONO = Universe();
+
+Factory = funct(uni, expl) {
+    uni, expl,
+    gc: uni.gc,
+    poly-count mut: 0,
+
+    _add: funct this(node)
+        node
+    end,
+
+    _Bot: funct this() this._add(Type(false)) end,
+    _Top: funct this() this._add(Type(true)) end,
+    Bot: funct this() this._Bot() end,
+    Top: funct this() this._Top() end,
+
+    _NBot: funct this(expl, expl-type)
+        n = this._add(Type(true));
+        n.null.present = false;
+        n.null.expl = expl;
+        n.null.expl-type = expl-type;
+        n.undef.present = false;
+        n.undef.expl = expl;
+        n.undef.expl-type = expl-type;
+        n.string.present = false;
+        n.string.expl = expl;
+        n.string.expl-type = expl-type;
+        n.bool.present = false;
+        n.bool.expl = expl;
+        n.bool.expl-type = expl-type;
+        n.num.present = false;
+        n.num.level = 0;
+        n.num.expl = expl;
+        n.num.expl-type = expl-type;
+        n.func.present = false;
+        n.func.is-top = false;
+        n.func.args = new-field-set();
+        n.func.expl = expl;
+        n.func.expl-type = expl-type;
+        n.func.unsafe = false;
+        n.func.unsafe-expl = expl;
+        n.obj.present = false;
+        n.obj.expl = expl;
+        n.obj.expl-type = expl-type;
+        n.enum.present = false;
+        n.enum.itops = CF_EMPTY;
+        n.enum.expl = expl;
+        n.enum.expl-type = expl-type;
+        n
+    end,
+
+
+    PNull: funct this(expl)
+        n = this._Bot();
+        n.null.present = true;
+        n.null.expl = expl;
+        n
+    end,
+
+    PUndef: funct this(expl)
+        n = this._Bot();
+        n.undef.present = true;
+        n.undef.expl = expl;
+        n
+    end,
+
+    PStr: funct this(expl)
+        n = this._Bot();
+        n.string.present = true;
+        n.string.expl = expl;
+        n
+    end,
+
+    NStr: funct this(expl)
+        n = this._NBot(expl, "a string");
+        n.string.present = true;
+        n.string.expl = null;
+        n.string.expl-type = null;
+        n
+    end,
+
+    PBool: funct this(expl)
+        n = this._Bot();
+        n.bool.present = true;
+        n.bool.expl = expl;
+        n
+    end,
+
+    NBool: funct this(expl)
+        n = this._NBot(expl, "a bool");
+        n.bool.present = true;
+        n.bool.expl = null;
+        n.bool.expl-type = null;
+        n
+    end,
+
+    PInt: funct this(expl)
+        n = this._Bot();
+        n.num.present = true;
+        n.num.level = 1;
+        n.num.expl = expl;
+        n
+    end,
+
+    NInt: funct this(expl)
+        n = this._NBot(expl, "an int");
+        n.num.present = true;
+        n.num.level = 1;
+        n
+    end,
+
+    PNum: funct this(expl)
+        n = this._Bot();
+        n.num.present = true;
+        n.num.level = 2;
+        n.num.expl = expl;
+        n
+    end,
+
+    NNum: funct this(expl)
+        n = this._NBot(expl, "a number");
+        n.num.present = true;
+        n.num.level = 2;
+        n.num.expl = null;
+        n.num.expl-type = null;
+        n
+    end,
+
+    NStrOrNum: funct this(expl)
+        n = this._NBot(expl, "a number or string");
+        n.string.present = true;
+        n.string.expl = null;
+        n.string.expl-type = null;
+        n.num.present = true;
+        n.num.level = 2;
+        n.num.expl = null;
+        n.num.expl-type = null;
+        n
+    end,
+
+
+    _FieldSet: funct(args, expls)
+        FieldSet(map-vals(args, funct(n) TypeSet(n) end), expls)
+    end,
+
+    PFunc: funct this(args, ret, expl, unsafe-expl)
+        expls = map-vals(args, funct() expl end);
+
+        n = this._Bot();
+        n.func.present = true;
+        n.func.args = FieldSet(map-vals(args, funct(set) TypeSet(set) end), expls);
+        n.func.ret = TypeSet(ret);
+        n.func.expl = expl;
+        n.func.unsafe = unsafe-expl != null;
+        n.func.unsafe-expl = unsafe-expl;
+        n
+    end,
+
+    NFunc: funct this(args, ret, expl, unsafe-allowed)
+        n = this._NBot(expl, "a function");
+        n.func.present = true;
+        n.func.is-top = false;
+        n.func.args = this._FieldSet(args, _);
+        n.func.ret = TypeSet([ret]);
+        n.func.unsafe = unsafe-allowed;
+        n.func.unsafe-expl = if unsafe-allowed then null else expl end;
+        n
+    end,
+
+    _listToFields: funct this(fields, expl)
+        expls = undef;
+        if expl != null then
+            expls = map-vals(fields, funct() expl end);
+        end;
+        this._FieldSet(fields, expls);
+    end,
+
+    PObj: funct this(rpairs, wpairs, expl)
+        n = this._Bot();
+        n.obj.present = true;
+        n.obj.reads = this._listToFields(rpairs, null);
+        n.obj.writes = this._listToFields(wpairs, null);
+        n.obj.expl = expl;
+        n
+    end,
+
+    NObj: funct this(rpairs, wpairs, expl)
+        n = this._NBot(expl, "an object");
+        n.obj.present = true;
+        n.obj.reads = this._listToFields(rpairs, expl);
+        n.obj.writes = this._listToFields(wpairs, expl);
+        n
+    end,
+
+    PCase: funct this(type, tag, expl)
+        n = this._Bot();
+        n.enum.present = true;
+        n.enum.expl = expl;
+        n.enum.cases.set(tag, type.obj._shallowReadCopy());
+        n.enum.expls.set(tag, expl);
+        type.drop(this.gc);
+        n
+    end,
+
+    NCase: funct this(type, tag, expl)
+        n = this._NBot(expl, "a case object");
+        n.enum.present = true;
+        n.enum.cases.set(tag, type.obj._shallowReadCopy());
+        type.drop(this.gc);
+        n
+    end,
+
+    VarPair: funct this()
+        n = this._Top();
+        p = this._Bot();
+        p.addFlow(n);
+        {p, n}
+    end,
+
+    filter: funct this(node, filter)
+        droplist = eml();
+        temp = this._add(Type(node.neg));
+        temp.mergeFrom(node, droplist, filter);
+        node.drop(this.gc);
+        temp
+    end,
+} end;

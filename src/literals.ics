@@ -1,0 +1,31 @@
+#import {re} from "std:regex"
+#import {s} from "std:strings"
+
+_GLOBALS = new-map([
+    ("null", case Null()),
+
+    ("undefined", case Undef()),
+    ("undef", case Undef()),
+    ("_", case Undef()),
+    ("pass", case Undef()),
+
+    ("true", case Bool()),
+    ("false", case Bool()),
+]);
+
+do unsafe
+    _INT-RE = re.new("^-?[0-9]+$");
+end;
+
+get-literal-type = funct(name)
+    if t = _GLOBALS.get(name); t != undefined then
+        t
+    else
+        if s.match(name, _INT-RE) != null then
+            temp = parse-int(name);
+            if temp == int(temp) then case Int() else case Float() end
+        else
+            null
+        end
+    end
+end;

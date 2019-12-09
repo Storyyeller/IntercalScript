@@ -1,0 +1,4 @@
+
+ast = {lhs: case Bar{}};
+let {lhs, lhs: case Bar{}} = ast;
+let case Bar{wtf} = lhs;

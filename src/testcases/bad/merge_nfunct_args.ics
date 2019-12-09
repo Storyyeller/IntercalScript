@@ -1,0 +1,4 @@
+funct(x)
+    x(0);
+    x();
+end(funct(a) a end)

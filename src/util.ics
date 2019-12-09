@@ -1,0 +1,17 @@
+PairSet = funct() {
+    s: new-map-mut(_),
+
+    has: funct this(a, b)
+        temp = this.s.get(a);
+        temp != undef && temp.has(b)
+    end,
+
+    add: funct this(a, b)
+        temp = this.s.get(a);
+        if temp == undef then
+            temp = new-set-mut(_);
+            this.s.set(a, temp);
+        end;
+        temp.add(b);
+    end,
+} end;

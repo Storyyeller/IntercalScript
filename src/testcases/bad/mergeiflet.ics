@@ -1,0 +1,4 @@
+funct(x)
+    if let case Foo(a) = x then false else true end;
+    if let case Bar(a) = x then false else true end;
+end(case Bar())

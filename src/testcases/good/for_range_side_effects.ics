@@ -1,0 +1,3 @@
+do for x in (foo = 4; []).0 then
+    foo ** 9
+end;

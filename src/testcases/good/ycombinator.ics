@@ -1,0 +1,9 @@
+Y = funct(f)
+    funct(x)
+        f(x(x))
+    end(funct(x)
+        f(x(x))
+    end)
+end;
+
+Y(funct(g) undefined end)

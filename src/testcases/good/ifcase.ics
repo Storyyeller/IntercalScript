@@ -1,0 +1,3 @@
+funct(x)
+    if let case Bar() = x then 0 else 1 end
+end(case Foo());

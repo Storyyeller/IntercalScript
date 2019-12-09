@@ -1,0 +1,6 @@
+
+funct(x)
+    if x != null then
+        x +' "HEllo"
+    end
+end(32)

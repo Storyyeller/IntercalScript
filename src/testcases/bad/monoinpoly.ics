@@ -1,0 +1,9 @@
+{-# language rank1-types #-}
+
+
+q = funct() funct(x) x end end;
+f = $q();
+
+f(4) + 4;
+f("H") +' "4";
+

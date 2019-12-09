@@ -1,0 +1,12 @@
+#import {tokenize} from "./tokenize"
+#import {parse: parse-sub} from "./generated2"
+
+parse = funct(fname, source)
+    res = tokenize(fname, source, false);
+    if let case Err(error) = res then
+        res
+    else
+        let case Ok(tokens) = res;
+        parse-sub(tokens, fname)
+    end
+end;

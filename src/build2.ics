@@ -1,0 +1,94 @@
+{-# language foreign-function-interface #-}
+
+#import {resolve, dirname} from `path`
+
+#import {s} from "std:strings"
+#import {Compiler} from "compiler2"
+
+let {log, error} = `console`;
+log("Running with node", `process`.versions.node, "v8", `process`.versions.v8);
+
+args = `process`.argv.slice(2);
+self-path = dirname(`new URL(import.meta.url).pathname`);
+
+
+help = "
+Usage: ics [options] [--] file1 [file2...]
+  options:
+    --src dir: Base directory for source files
+    --out dir: Base directory for output files
+    --std dir: Base directory for standard library files
+    --shebang: Add a shebang to compiled file, so it can be run from the shell directly.
+    --help: Display this message.
+";
+
+out-root = _;
+src-root = _;
+std-root = _;
+default-src-root = _;
+inputs = eml();
+include-shebang = false;
+helped = false;
+has-- = false;
+
+do while arg = args.shift(); arg != _ then
+    if s.startsWith(arg, "--") && !has-- then
+        opt = s.sliceE(arg, 2);
+
+        if opt == "out" then
+            out-root = args.shift();
+        else if opt == "src" then
+            src-root = args.shift();
+        else if opt == "std" then
+            std-root = args.shift();
+        else if opt == "shebang" then
+            include-shebang = true;
+        else if opt == "help" then
+            log(help);
+            helped = true;
+        else if opt == "" then
+            (* Stop parsing options *)
+            has-- = true;
+        else
+            error("Unrecognized argument", arg);
+        end end end end end end;
+    else
+        inputs.push(arg);
+        if default-src-root == _ then
+            default-src-root = dirname(arg);
+        end;
+    end;
+end;
+
+if out-root == _ then out-root = "." end;
+if src-root == _ then src-root = default-src-root end;
+if src-root == _ then src-root = "." end; (* should never happen *)
+if std-root == _ then std-root = self-path +' "/../src/std" end;
+
+if inputs.length > 0 then
+    log("Using standard library root", std-root);
+    log("Using source root", src-root);
+    log("Using output root", out-root);
+
+    compiler = Compiler(out-root, src-root, std-root);
+    compiler.compilePrelude(resolve(std-root, "builtins.ics"));
+
+    if compiler.prelude != null then
+        do for fname in inputs then
+            fname = resolve(fname);
+            compiler.compile(fname, null, include-shebang);
+        end;
+    end;
+
+    let {failed, errors, warnings} = compiler.reporter;
+    if warnings.size > 0 || failed then
+        emsg = if errors.size == 1 then "error and" else "errors and" end;
+        wmsg = if warnings.size == 1 then "warning." else "warnings." end;
+        print("Finished with", errors.size, emsg, warnings.size, wmsg);
+    end;
+    if failed then
+        `process`.exit(1);
+    end;
+else if !helped then
+    log(help);
+end end;

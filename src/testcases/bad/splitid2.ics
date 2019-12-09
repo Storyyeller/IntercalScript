@@ -1,0 +1,8 @@
+f = funct(x)
+    if let case Foo() = x then
+        x
+    else
+        x
+    end
+end;
+let case Foo() = f(case Bar());

@@ -1,0 +1,4 @@
+x = please 4;
+please print(x+1);
+please print(x+2);
+please print(x+3);

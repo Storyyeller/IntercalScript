@@ -1,0 +1,5 @@
+#import {w: wab} from "../imports/testlib1"
+#import {w} from "../imports/testlib1"
+#import {mod} from "../imports/testlib1"
+let {a, b} = wab;
+a(b(w.a(mod.w.b)));

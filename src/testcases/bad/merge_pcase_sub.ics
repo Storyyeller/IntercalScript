@@ -1,0 +1,7 @@
+
+let case Foo{0: a} =
+    if false then
+        case Foo{0}
+    else
+        case Foo{1}
+    end;

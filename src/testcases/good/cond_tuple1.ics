@@ -1,0 +1,3 @@
+a = case Bar("");
+b = case Foo("");
+(a = b, let case Bar(x) = a).1 && (x > 4).0

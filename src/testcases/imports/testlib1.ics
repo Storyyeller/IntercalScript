@@ -1,0 +1,10 @@
+{-# language rank1-types #-}
+w = $funct()
+    {
+        a: funct(x) x end,
+        b: funct(x) x end,
+    }
+end;
+w = w();
+
+mod = {w};

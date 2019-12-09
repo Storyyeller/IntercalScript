@@ -1,0 +1,6 @@
+
+a = case Foo();
+
+do while let case Foo() = a then 0 end;
+
+let case Bar() = a;

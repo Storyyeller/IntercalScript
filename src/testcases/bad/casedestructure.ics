@@ -1,0 +1,1 @@
+let case Foo{a, b} = case Foo{a: 9};

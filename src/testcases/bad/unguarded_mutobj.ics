@@ -1,0 +1,4 @@
+{-# language rank1-types #-}
+q = $
+    {0 mut: 1};
+

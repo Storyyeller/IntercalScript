@@ -1,0 +1,5 @@
+{-# language rank1-types #-}
+w = $funct(x)
+    f = funct(a, b) b end;
+    if f(x, true) then _ end;
+end;

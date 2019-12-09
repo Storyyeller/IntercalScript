@@ -1,0 +1,9 @@
+q = id;
+
+do while false then
+    q = 4;
+end;
+
+
+q(3) + 3;
+q("") +' "";

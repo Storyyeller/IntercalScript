@@ -1,0 +1,5 @@
+results = new-set-mut(_);
+results.add("hello");
+do for tok in results then
+    tok % 6;
+end;

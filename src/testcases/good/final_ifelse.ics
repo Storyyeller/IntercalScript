@@ -1,0 +1,7 @@
+a = 4;
+
+if false then
+    funct() a end;
+else
+    a = "";
+end

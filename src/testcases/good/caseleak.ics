@@ -1,0 +1,7 @@
+{-# language foreign-function-interface #-}
+
+funct(x)
+    let case Foo(a) = x;
+    let case Bar() = x;
+    x
+end(``)

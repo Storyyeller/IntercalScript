@@ -1,0 +1,9 @@
+a = if false then null else (7) end;
+
+if a != null && true then
+    a.0 + 3;
+end;
+
+
+
+
