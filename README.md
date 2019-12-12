@@ -485,7 +485,7 @@ setenv = funct(key, value)
 end;
 ```
 
-As you can see, the lack early returns makes it much easier to follow the control flow and see how the error values propagate. Likewise, the use of case objects makes it impossible to accidently use return values that don't actually exist.
+As you can see, the lack of early returns makes it much easier to follow the control flow and see how the error values propagate. Likewise, the use of case objects makes it impossible to accidently use return values that don't actually exist.
 
 ## Assertions
 
