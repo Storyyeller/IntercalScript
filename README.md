@@ -624,7 +624,7 @@ parse-int =
         `s => parseInt(s, 10)`
     else
         funct(s)
-            0/0
+            0
         end
     end;
 ```
