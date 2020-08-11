@@ -736,7 +736,7 @@ Feature Z is bad and you should feel bad for proposing it. We consider IntercalS
 
 ### Where can I learn more about IntercalScript's innovative type inference engine?
 
-For a quick overview of the concepts behind IntercalScript's type system, we recomend reading [this 157 page PHD thesis](https://www.cl.cam.ac.uk/~sd601/thesis.pdf). After that, you can learn more about the particular implementation details of IntercalScript by reading the source code [here](src/types6.ics) and [here](src/typeck6.ics).
+For a quick overview of the concepts behind IntercalScript's type system, we recomend reading [this 157 page PHD thesis](https://www.cs.tufts.edu/~nr/cs257/archive/stephen-dolan/thesis.pdf). After that, you can learn more about the particular implementation details of IntercalScript by reading the source code [here](src/types6.ics) and [here](src/typeck6.ics).
 
 ### How is `ImmutableTreeListᐸElementTᐳ` a valid identifier? I thought angle brackets weren't allowed.
 
