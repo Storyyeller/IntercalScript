@@ -34,7 +34,7 @@ Hello, world!
 
 ## Windows
 
-Get a better OS, then see above.
+Install Ubuntu-based `Windows Subsystem for Linux`, then see above.
 
 # A Quick Tour of IntercalScript
 
